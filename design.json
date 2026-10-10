@@ -1,0 +1,198 @@
+{
+  "component_diagram": "## Component diagram\n\nSaved as `iroute-architecture.html` in the workspace.\n\n```mermaid\ngraph LR\n  subgraph Gateway\n    AG[API Gateway]\n    AUTH[AuthN/AuthZ]\n  end\n  subgraph \"Routing Service\"\n    RA[Routing API]\n    CE[Context Enrichment]\n    RR[Rule Repository]\n    EE[Evaluation Engine]\n  end\n  subgraph \"Rule Store\"\n    DB[(Metadata DB PostgreSQL)]\n    OS[Object Store S3/GCS]\n  end\n  BP[Business Portal]\n  EB[Event Bus Kafka/SQS]\n  DISP[Dispatcher]\n  PSP[PSP / PGSPs]\n  MA[Merchant App]\n\n  MA -->|HTTPS| AG\n  AG --> RA\n  AG -.->|token| AUTH\n  RA --> CE\n  RA --> EE\n  RR --> DB\n  RR --> OS\n  RR --> EE\n  EE --> EB\n  EB --> DISP\n  DISP --> PSP\n  BP --> DB\n  BP -.->|artifact| OS\n```\n\n### Module responsibilities\n\n| Module | Responsibility |\n|--------|----------------|\n| **API Gateway** | TLS termination, merchant API-key validation, rate limiting, WAF, routing request ingress. |\n| **AuthN/AuthZ** | Verifies merchant JWT/API-key, resolves scopes and entitlements; returns normalized principal. |\n| **Routing API** | Validates request schema, orchestrates enrichment and evaluation, applies post-processing, returns ranked result, emits events. |\n| **Context Enrichment** | Fetches merchant routing config, card/BIN metadata, FX rates, risk/fraud signals and PSP health. |\n| **Rule Repository** | Loads the active rule package from the central store, maintains in-memory cache, handles reload and rollback. |\n| **Evaluation Engine** | Walks the decision tree, evaluates predicates, computes per-PSP priority scores, returns ordered candidates. |\n| **Business Portal** | UI for business users to author, preview, test and publish decision-tree rules. |\n| **Metadata DB** | Stores package versions, active version pointers per channel/tenant, audit log and approval workflow state. |\n| **Object Store** | Immutable artifact storage for versioned rule packages (tar.gz/zip with manifest and checksums). |\n| **Event Bus** | Emits `route.decision` events for downstream dispatcher, analytics and audit consumers. |\n| **Dispatcher** | Uses the ranked PSP/PGSP list to submit the payment intent and handle retries/failover. |",
+  "data_flow": [
+    "1. Merchant app calls `POST /v1/route` (or `GET /v1/route/health`) through API Gateway with `Authorization` header, `Idempotency-Key`, payment amount/currency/card/MCC/region and optional `X-Rule-Version`.",
+    "2. API Gateway validates TLS, API-key rate limits and WAF rules, then forwards the request to the Routing API.",
+    "3. Routing API normalizes the payload, calls AuthN/AuthZ to resolve merchant profile and permissions.",
+    "4. Context Enrichment gathers merchant routing config, BIN/issuer, FX, risk score and PSP health/latency signals with short timeouts.",
+    "5. Rule Repository resolves the active rule package for the merchant/channel (or pinned version) from local cache; on cache miss it fetches the active pointer from Metadata DB and downloads the artifact from Object Store.",
+    "6. Evaluation Engine loads the decision tree and evaluates the enriched payment context, matching predicates and accumulating priority scores per PSP/PGSP.",
+    "7. Engine applies tie-breakers (success rate, latency, cost) and produces a deterministic ordered list of candidates with matched-rule metadata.",
+    "8. Routing API applies capacity/health filters and a fallback default, then returns the ranked result to the merchant.",
+    "9. Routing API emits a `route.decision` event to the Event Bus for the Dispatcher, analytics and audit log consumers.",
+    "10. Dispatcher consumes the event and forwards the payment intent to the top-priority PSP, falling back to the next candidate on failure."
+  ],
+  "rule_storage_versioning": "## Central store abstraction\n\nThe central store is split into two layers: a **metadata layer** in PostgreSQL for queries and lifecycle state, and an **artifact layer** in S3/GCS/Azure Blob for immutable rule package binaries. A repository abstraction (`IRuleStore`) hides the backend from the engine.\n\n### Package structure\n\n```\nrule-package-<id>-<version>.tar.gz\n\u251c\u2500\u2500 manifest.json          # id, version, channel, schemaVersion, createdAt, checksums\n\u251c\u2500\u2500 schema.json            # JSON Schema for the decision tree\n\u251c\u2500\u2500 decision-tree.json     # nodes, predicates, actions\n\u251c\u2500\u2500 defaults.json          # fallback rules and default candidate list\n\u2514\u2500\u2500 tests.json             # expected outcomes for sample contexts\n```\n\n### Versioning model\n\n- **Semantic versioning** (`major.minor.patch`).\n- **Immutable artifacts**: once uploaded, a version is never mutated; only the active pointer changes.\n- **Channels**: `sandbox`, `staging`, `production`.\n- **Active pointer**: a single row per `(channel, scope)` where scope can be global, region or merchant. Atomic updates via `UPDATE ... WHERE version = current` optimistic locking.\n- **Canary / pinning**: a merchant can be pinned to a specific version via `X-Rule-Version`; default uses the channel active pointer.\n- **Lifecycle workflow**: `draft` \u2192 `validate` (schema + tests + dry-run) \u2192 `approve` \u2192 `publish` \u2192 `activate`. Rollback switches the active pointer to a previous version instantly.\n- **Audit**: every edit, publish and pointer change is appended to an immutable audit log table (`rule_audit_log`) with user, diff and timestamp.\n\n### Store interface (TypeScript)\n\n```typescript\ninterface IRuleStore {\n  getActiveVersion(channel: string, scope?: Scope): Promise<VersionRef>;\n  getPackage(versionRef: VersionRef): Promise<RulePackage>;\n  publish(package: RulePackageArtifact, channel: string): Promise<VersionRef>;\n  setActive(versionRef: VersionRef, channel: string, scope: Scope): Promise<void>;\n  listVersions(channel: string, limit: number): Promise<VersionRef[]>;\n}\n```",
+  "evaluation_engine_design": "## Decision tree evaluation engine\n\n### Rule model\n\nA rule package contains a tree of nodes. Each node has:\n\n- `id`, `description`\n- `predicate`: an expression using operators `eq`, `neq`, `in`, `not_in`, `gt`, `gte`, `lt`, `lte`, `range`, `regex`, `exists`, `and`, `or`, `not`.\n- `action`: one or more of `include(PSP, weight)`, `exclude(PSP)`, `setPriority(PSP, priority)`, `setScore(PSP, delta)`.\n- `children`: nested nodes evaluated when the predicate is true.\n\n### Evaluation algorithm\n\n1. **Load & compile**: on package load, parse the tree into an in-memory AST/DAG and optionally compile hot predicates into V8-friendly predicate functions.\n2. **Normalize context**: map request fields + enriched data into a flat typed `EvaluationContext` (e.g., `amount`, `currency`, `cardCountry`, `mcc`, `riskScore`).\n3. **Tree walk**: recursively evaluate each node. If `predicate(context)` is true, apply actions and recurse into children.\n4. **Scoring**: maintain a map `Map<PSP, CandidateScore>`. Actions add/subtract scores, set explicit priorities, or exclude candidates. Exclusion is final.\n5. **Tie-breaking**: after traversal, sort candidates by `(score desc, configuredPriority asc, psp.successRate desc, psp.latencyP99 asc)`.\n6. **Post-processing**: apply PSP health/capacity filters and append the configured fallback list if no candidate remains.\n7. **Output**: return ordered array of `{ psp, priority, score, matchedRules[], excluded: boolean }`.\n\n### Key design choices\n\n- **Determinism**: same `(ruleVersion, context)` always yields same result; rule evaluation is pure with no side effects.\n- **Performance**: tree cached in memory; hot path avoids I/O. Typical target p99 < 5 ms per evaluation.\n- **Extensibility**: custom predicate plugins registered by name (e.g., `pspUptime`, `merchantVolume`).\n- **Explainability**: the engine records every matched rule, score delta and tie-breaker so `/route` can optionally return `explanation: true` details.\n- **Safety**: a maximum tree depth and node count are enforced at publish time to prevent runaway evaluation.",
+  "packaging_deployment": "## Packaging and deployment\n\n### Build pipeline\n\n```\nBusiness Portal / Git\n        |\n        v\n   Rule editor \u2500\u2500\u25ba draft package\n        |\n        v\n   CI / rule-linter\n   - JSON Schema validation\n   - predicate syntax checks\n   - cycle / depth limits\n   - unit tests against tests.json\n   - dry-run on historical sample\n        |\n        v\n   Artifact build\n   - deterministic tar.gz\n   - SHA-256 checksum\n   - signed with KMS key (optional)\n        |\n        v\n   Publish\n   - upload artifact to object store\n   - register version row in Metadata DB\n   - mark active for channel/scope\n```\n\n### Deployment model\n\n- **Immutable containers**: Docker image embeds a baseline rule package for startup resilience, but services prefer the active package from the central store.\n- **Runtime reload**: services subscribe to cache-invalidation events (Redis pub/sub, SNS or Kafka) on new publishes. They fetch the new package, validate it, and swap the in-memory tree atomically.\n- **Rollback**: change the active pointer in Metadata DB and broadcast invalidation; all nodes reload within seconds.\n- **Multi-region**: object store + DB replicated across regions; active pointer is per-region to support staggered rollouts.\n- **Pinning**: `X-Rule-Version` header allows per-request testing of a non-active version without changing channel pointer.\n\n### Package registry API\n\n- `GET /packages/:version` \u2013 download artifact\n- `GET /channels/:channel/active` \u2013 resolve active version\n- `POST /packages/:version/activate/:channel` \u2013 promote version\n- `GET /packages` \u2013 list versions with metadata",
+  "api_contract": {
+    "base_url": "https://api.iroute.example.com/v1",
+    "endpoint": "/route",
+    "method": "POST",
+    "headers": {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer <merchant-jwt-or-api-key>",
+      "Idempotency-Key": "<uuid> (required for mutating downstream requests)",
+      "X-Rule-Version": "<optional semantic version, e.g. 2.3.1>"
+    },
+    "request_body": {
+      "paymentIntentId": "string (required)",
+      "merchantId": "string (required)",
+      "amount": {
+        "value": "number",
+        "currency": "string (ISO-4217, required)"
+      },
+      "instrument": {
+        "type": "card | wallet | bank_transfer | bnpl",
+        "bin": "string (optional)",
+        "cardCountry": "string (ISO-3166-1 alpha-2, optional)",
+        "network": "visa | mastercard | amex | ...",
+        "tokenized": "boolean"
+      },
+      "context": {
+        "mcc": "string (optional)",
+        "region": "string (optional, e.g. EU, APAC)",
+        "customerCountry": "string (optional)",
+        "riskScore": "number 0..1 (optional, from risk service)",
+        "threeDsRequested": "boolean",
+        "metadata": "object (optional key/value for custom predicates)"
+      },
+      "options": {
+        "includeExplanation": "boolean (default false)",
+        "maxCandidates": "integer (default 5)"
+      }
+    },
+    "response_200": {
+      "routingDecisionId": "string (uuid)",
+      "ruleVersion": "string (semver of package used)",
+      "candidates": [
+        {
+          "pspId": "string",
+          "pgspId": "string | null",
+          "priority": "integer (1 = highest)",
+          "score": "number",
+          "reasons": ["string (matched rule ids/descriptions)"],
+          "estimatedLatencyMs": "number | null",
+          "estimatedCostBps": "number | null"
+        }
+      ],
+      "excluded": [
+        {
+          "pspId": "string",
+          "reason": "string"
+        }
+      ],
+      "fallbackUsed": "boolean",
+      "explanation": {
+        "contextSnapshot": "object (only when requested)",
+        "matchedRules": ["object"],
+        "tieBreakers": ["object"]
+      },
+      "decidedAt": "ISO-8601 timestamp"
+    },
+    "error_responses": {
+      "400": {
+        "code": "INVALID_REQUEST",
+        "message": "Request schema validation failed",
+        "details": ["..."]
+      },
+      "401": {
+        "code": "UNAUTHORIZED",
+        "message": "Missing or invalid credentials"
+      },
+      "403": {
+        "code": "FORBIDDEN",
+        "message": "Merchant not allowed for this operation"
+      },
+      "404": {
+        "code": "RULE_VERSION_NOT_FOUND",
+        "message": "Requested X-Rule-Version does not exist"
+      },
+      "422": {
+        "code": "NO_CANDIDATE",
+        "message": "No PSP matched and no fallback configured"
+      },
+      "429": {
+        "code": "RATE_LIMITED",
+        "message": "Too many requests"
+      },
+      "500": {
+        "code": "INTERNAL_ERROR",
+        "message": "Unexpected evaluation failure"
+      },
+      "503": {
+        "code": "RULE_STORE_UNAVAILABLE",
+        "message": "Unable to load rule package; embedded fallback used"
+      }
+    }
+  },
+  "tech_stack": [
+    {
+      "category": "Runtime / Framework",
+      "technology": "Node.js 20 LTS + Fastify 4",
+      "rationale": "Fast, low-overhead HTTP framework with built-in JSON schema validation, request lifecycle hooks and plugin ecosystem; fits high-throughput routing decisions."
+    },
+    {
+      "category": "Language",
+      "technology": "TypeScript 5.x",
+      "rationale": "Type safety for rule ASTs, API contracts and store interfaces; reduces runtime schema errors and improves refactoring confidence."
+    },
+    {
+      "category": "Rule evaluation",
+      "technology": "In-memory compiled AST (custom engine)",
+      "rationale": "Deterministic, sub-millisecond evaluation; no external interpreter needed. JSON-logic libraries can be used as a parser fallback."
+    },
+    {
+      "category": "Metadata store",
+      "technology": "PostgreSQL 15+",
+      "rationale": "ACID guarantees for active-pointer updates, audit log and versioning metadata; supports row-level locking and JSONB for flexible rule metadata."
+    },
+    {
+      "category": "Artifact store",
+      "technology": "AWS S3 (or GCS / Azure Blob)",
+      "rationale": "Durable, cheap, immutable object storage with versioning, lifecycle policies and signed URLs for secure artifact distribution."
+    },
+    {
+      "category": "Cache & reload signaling",
+      "technology": "Redis Cluster",
+      "rationale": "Local LRU cache backed by Redis pub/sub for near-instant invalidation across horizontally scaled nodes."
+    },
+    {
+      "category": "Event bus",
+      "technology": "Kafka or AWS SQS/SNS",
+      "rationale": "Durable, ordered events for route decisions, audit and downstream dispatch; decouples routing from PSP submission."
+    },
+    {
+      "category": "Observability",
+      "technology": "OpenTelemetry + Prometheus + Grafana + structured logs (pino)",
+      "rationale": "Distributed tracing of evaluate/store/enrichment paths, latency histograms and business dashboards."
+    },
+    {
+      "category": "Container platform",
+      "technology": "Docker + Kubernetes (EKS/GKE)",
+      "rationale": "Horizontal pod autoscaling, rolling deployments, readiness probes that verify rule package loaded."
+    },
+    {
+      "category": "Schema / API docs",
+      "technology": "JSON Schema + OpenAPI 3.1",
+      "rationale": "Machine-readable contracts for validation, client generation and Business Portal form rendering."
+    },
+    {
+      "category": "CI/CD",
+      "technology": "GitHub Actions / GitLab CI",
+      "rationale": "Automated lint, test, package build, signing and promotion pipeline integrated with the artifact store."
+    }
+  ],
+  "scalability_fault_tolerance": [
+    "Stateless routing service instances allow horizontal scaling behind a load balancer; no session affinity required.",
+    "Active rule package is cached in-process after first load; evaluation path requires no network calls under steady state.",
+    "Redis-backed distributed cache reduces load on PostgreSQL and object store for package metadata and artifacts.",
+    "Embedded fallback rule package lets the service continue operating if the central store is unreachable, with a 503 warning.",
+    "Circuit breakers (e.g., opossum) protect evaluation from slow context-enrichment or PSP health services.",
+    "Async enrichment with aggressive timeouts; missing data degrades gracefully by skipping predicates that depend on it.",
+    "Rate limiting per merchant and per IP at API Gateway prevents thundering-herd and abuse.",
+    "Kubernetes HPA scales on CPU and custom metric `route.p99_latency`; readiness probe fails until a valid rule tree is loaded.",
+    "Multi-region active-active deployment with per-region active pointers supports locality and rolling upgrades.",
+    "Idempotency keys ensure repeated `POST /route` calls do not create duplicate downstream payment attempts."
+  ],
+  "observability": [
+    "Distributed OpenTelemetry traces span API Gateway \u2192 Routing API \u2192 Enrichment \u2192 Rule Repository \u2192 Evaluation Engine \u2192 Event Bus.",
+    "Prometheus metrics: `route_requests_total`, `route_latency_seconds`, `rule_evaluation_duration_seconds`, `rule_cache_hit_ratio`, `package_load_duration_seconds`, `psp_candidate_score`, `route_fallback_total`, `rule_store_errors_total`.",
+    "Structured JSON logs (pino) with `trace_id`, `span_id`, `merchant_id`, `payment_intent_id`, `rule_version` and matched rule IDs.",
+    "Grafana dashboards: decision latency percentiles, per-PSP routing distribution, rule version adoption, cache hit rate and enrichment failure rate.",
+    "Alerting rules: p99 latency > 50 ms, error rate > 0.1%, package load failure, no active version for channel, rule store unreachable > 30 s.",
+    "Audit events emitted to Kafka/SQS for every route decision and every rule publish/rollback, enabling compliance replay and business analytics.",
+    "Health endpoints: `/health/live` (process up) and `/health/ready` (rule package loaded and store reachable).",
+    "Business Portal exposes per-rule match counts and A/B-style comparison between versions before full activation."
+  ]
+}

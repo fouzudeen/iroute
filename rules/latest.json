@@ -1,0 +1,101 @@
+{
+  "version": "1.2.0",
+  "createdAt": "2026-10-10T09:21:42.359Z",
+  "description": "EU card routing package",
+  "rules": [
+    {
+      "id": "high-value-eu-cards",
+      "priority": 100,
+      "description": "Route high-value EU card transactions to premium PSPs",
+      "condition": {
+        "operator": "and",
+        "conditions": [
+          {
+            "operator": "gte",
+            "field": "amount",
+            "value": 500
+          },
+          {
+            "operator": "in",
+            "field": "country",
+            "value": [
+              "DE",
+              "FR",
+              "NL",
+              "BE",
+              "AT"
+            ]
+          },
+          {
+            "operator": "in",
+            "field": "cardBrand",
+            "value": [
+              "visa",
+              "mastercard"
+            ]
+          }
+        ]
+      },
+      "actions": {
+        "providers": [
+          {
+            "id": "psp-premium-eu",
+            "type": "psp",
+            "weight": 100,
+            "slaMs": 800
+          },
+          {
+            "id": "pgsp-eu-backup",
+            "type": "pgsp",
+            "weight": 80,
+            "slaMs": 1200
+          }
+        ],
+        "fallback": {
+          "id": "psp-global",
+          "type": "psp",
+          "weight": 50
+        }
+      }
+    },
+    {
+      "id": "risky-customers",
+      "priority": 90,
+      "description": "Send risky customers to specialized risk PSP",
+      "condition": {
+        "operator": "gte",
+        "field": "customer.riskScore",
+        "value": 70
+      },
+      "actions": {
+        "providers": [
+          {
+            "id": "psp-risk",
+            "type": "psp",
+            "weight": 100
+          }
+        ]
+      }
+    },
+    {
+      "id": "default",
+      "priority": 0,
+      "description": "Default route",
+      "condition": {
+        "operator": "eq",
+        "field": "currency",
+        "value": "EUR"
+      },
+      "actions": {
+        "providers": [
+          {
+            "id": "psp-standard",
+            "type": "psp",
+            "weight": 100
+          }
+        ]
+      }
+    }
+  ],
+  "checksum": "8d77b69791bf40724c74d350d302c38682d94743aba1e840e9453dbda9d32d96"
+}

@@ -1,0 +1,84 @@
+{
+  "$id": "https://payment-routing.example.com/rule-package.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["version", "createdAt", "rules"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "Semantic version of the rule package"
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "description": {
+      "type": "string"
+    },
+    "rules": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/ruleNode" }
+    }
+  },
+  "definitions": {
+    "ruleNode": {
+      "type": "object",
+      "required": ["id", "priority", "condition", "actions"],
+      "properties": {
+        "id": { "type": "string" },
+        "priority": { "type": "integer", "description": "Higher number = higher priority" },
+        "description": { "type": "string" },
+        "condition": { "$ref": "#/definitions/condition" },
+        "actions": { "$ref": "#/definitions/actions" }
+      }
+    },
+    "condition": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["operator", "field", "value"],
+          "properties": {
+            "operator": {
+              "enum": ["eq", "ne", "gt", "gte", "lt", "lte", "in", "notIn", "regex"]
+            },
+            "field": { "type": "string" },
+            "value": {}
+          }
+        },
+        {
+          "type": "object",
+          "required": ["operator", "conditions"],
+          "properties": {
+            "operator": { "enum": ["and", "or", "not"] },
+            "conditions": {
+              "type": "array",
+              "items": { "$ref": "#/definitions/condition" }
+            }
+          }
+        }
+      ]
+    },
+    "actions": {
+      "type": "object",
+      "required": ["providers"],
+      "properties": {
+        "providers": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/provider" }
+        },
+        "fallback": { "$ref": "#/definitions/provider" }
+      }
+    },
+    "provider": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "enum": ["psp", "pgsp"] },
+        "weight": { "type": "integer", "default": 100 },
+        "overrides": { "type": "object" },
+        "slaMs": { "type": "integer" }
+      }
+    }
+  }
+}
