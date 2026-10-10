@@ -34,7 +34,8 @@ The rendered component diagram is saved as `iroute-architecture.html`. Open it i
 5. Rule Repository resolves the active rule package for the merchant/channel (or pinned version) from local cache; on cache miss it fetches the active pointer from Metadata DB and downloads the artifact from Object Store.
 6. Strategy Registry iterates through registered strategies in priority order and selects the first strategy whose `canRoute()` predicate matches the enriched context (e.g. `DirectBankStrategy` if a BIN mapping exists, otherwise `RuleBasedStrategy`).
 7. The selected strategy produces a typed `RoutingDecision` object containing candidates, provenance (strategy name, version, matched rules, context fingerprint), and latency.
-8. Routing API applies capacity/health filters and a fallback default, then returns the ranked result to the merchant.
+8. Decorator Registry runs the ordered post-decision decorator pipeline (fallback, compliance, capacity scoring, etc.), augmenting the decision and recording each applied decorator in provenance.
+9. Routing API returns the final ranked result to the merchant.
 9. Routing API emits a `route.decision` event to the Event Bus for the Dispatcher, analytics and audit log consumers.
 10. Dispatcher consumes the event and forwards the payment intent to the top-priority PSP, falling back to the next candidate on failure.
 
@@ -93,6 +94,25 @@ Out-of-the-box strategies:
 | `RuleBasedStrategy` | always true (registered last) | General decision-tree routing |
 
 Additional strategies (e.g. `PlaidOpenBankingStrategy`, `NetworkTokenStrategy`) can be registered without changing existing strategies.
+
+### Post-decision decorators
+
+After a strategy produces a `RoutingDecision`, an ordered pipeline of **decorators** augments the decision or the payment context. Decorators are mutually composable and each records its effect in the decision provenance.
+
+Each decorator implements:
+
+- `canDecorate(decision, context)`: whether it should run.
+- `decorate(decision, context)`: returns a new `RoutingDecision`.
+
+Out-of-the-box decorators:
+
+| Decorator | Purpose | Trigger |
+|-----------|---------|---------|
+| `FallbackDecorator` | Inserts a fallback provider if no candidates were selected | `candidates.length === 0` |
+| `ComplianceDecorator` | Flags high-risk / sanctioned contexts and excludes non-compliant candidates | risk score or sanctioned country |
+| `CapacityScoringDecorator` | Adjusts candidate scores based on retry attempts and promotions | retry/promotion metadata present |
+
+The `DecoratorRegistry` runs decorators in registration order, skips those whose `canDecorate` returns false, catches and logs failures without corrupting the decision, and records `provenance.decorators` with the list of applied decorators.
 
 ### RoutingDecision typed object
 

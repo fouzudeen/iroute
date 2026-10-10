@@ -20,7 +20,9 @@ npm start
 - **StrategyRegistry** — maintains an ordered list of mutually exclusive strategies and picks the first matching one.
 - **RuleBasedStrategy** — default strategy that evaluates decision-tree rules.
 - **DirectBankStrategy** — routes directly to a bank-specific PGSP/PSP based on `issuerBin`.
-- **RoutingEngine** — orchestrates loading, validation, context normalization, strategy selection, and evaluation.
+- **DecisionDecorator** — pluggable post-decision augmentation of a `RoutingDecision`.
+- **DecoratorRegistry** — runs decorators in order and records them in provenance.
+- **RoutingEngine** — orchestrates loading, validation, context normalization, strategy selection, decorator pipeline, and evaluation.
 - **RulePackager** — creates immutable rule packages with SHA-256 checksums.
 - **HTTP Server** — exposes `POST /v1/route`, `GET /health/live`, `GET /health/ready`, `/openapi.json`, and `/docs`.
 - **OpenAPI / Swagger** — API contract documented at `docs/openapi/openapi.yaml` and served interactively at `/docs`.
@@ -204,6 +206,18 @@ The engine supports multiple mutually exclusive strategies. The `StrategyRegistr
 
 Add new strategies by extending `RoutingStrategy` and calling `engine.registerStrategy(newStrategy)`.
 
+## Post-Decision Decorators
+
+After a strategy produces a `RoutingDecision`, an ordered pipeline of decorators can augment the decision or the payment context. Decorators run in registration order, and each applied decorator is recorded in `decision.provenance.decorators`.
+
+| Decorator | Purpose | Trigger |
+|-----------|---------|---------|
+| `FallbackDecorator` | Inserts a fallback provider when no candidates exist | no candidates |
+| `ComplianceDecorator` | Flags high-risk / sanctioned contexts and excludes non-compliant candidates | risk score or sanctioned country |
+| `CapacityScoringDecorator` | Adjusts scores for retries and promotions | retry/promotion metadata |
+
+Add custom decorators by extending `DecisionDecorator` and calling `engine.registerDecorator(newDecorator)`.
+
 ## Project Structure
 
 ```
@@ -239,9 +253,16 @@ Add new strategies by extending `RoutingStrategy` and calling `engine.registerSt
 │   │   ├── registry.js
 │   │   ├── rule-based-strategy.js
 │   │   └── strategy.js
+│   ├── decorators/
+│   │   ├── decorator.js
+│   │   ├── registry.js
+│   │   ├── fallback-decorator.js
+│   │   ├── compliance-decorator.js
+│   │   └── scoring-decorator.js
 │   ├── types.js
 │   └── server.js
 ├── tests/
+│   ├── decorators.test.js
 │   ├── engine.test.js
 │   ├── evaluator.test.js
 │   ├── integration.test.js

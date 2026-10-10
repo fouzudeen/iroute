@@ -33,6 +33,10 @@
  * @property {string} evaluatedAt
  * @property {string[]} [matchedRules]
  * @property {Object} [contextFingerprint]
+ * @property {string[]} [decorators]
+ * @property {string[]} [complianceFlags]
+ * @property {Object} [scoringAdjustments]
+ * @property {number} [decoratorCount]
  */
 
 /**
