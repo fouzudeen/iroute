@@ -1,7 +1,7 @@
 {
   "version": "1.2.0",
-  "createdAt": "2026-10-10T09:21:42.359Z",
-  "description": "EU card routing package",
+  "createdAt": "2026-10-10T09:32:51.857Z",
+  "description": "",
   "rules": [
     {
       "id": "high-value-eu-cards",
@@ -97,5 +97,5 @@
       }
     }
   ],
-  "checksum": "8d77b69791bf40724c74d350d302c38682d94743aba1e840e9453dbda9d32d96"
+  "checksum": "5747f34fe0de6effbd0dcf48b5a46c9429a473a2b2a828d45b8b4b1b8acb554d"
 }

@@ -1,0 +1,21 @@
+{
+  "version": "1.0.0",
+  "description": "Direct bank-to-PGSP mappings by issuer BIN",
+  "mappings": {
+    "424242": {
+      "bankCode": "CHASE",
+      "bankName": "Chase Bank",
+      "providers": [
+        { "id": "pgsp-chase-direct", "type": "pgsp", "weight": 100, "slaMs": 300 },
+        { "id": "psp-chase-fallback", "type": "psp", "weight": 90, "slaMs": 600 }
+      ]
+    },
+    "555555": {
+      "bankCode": "DB",
+      "bankName": "Deutsche Bank",
+      "providers": [
+        { "id": "pgsp-deutsche-bank", "type": "pgsp", "weight": 100, "slaMs": 250 }
+      ]
+    }
+  }
+}

@@ -12,11 +12,14 @@ The rendered component diagram is saved as `iroute-architecture.html`. Open it i
 |--------|----------------|
 | **API Gateway** | TLS termination, merchant API-key validation, rate limiting, WAF, routing request ingress. |
 | **AuthN/AuthZ** | Verifies merchant JWT/API-key, resolves scopes and entitlements; returns normalized principal. |
-| **Routing API** | Validates request schema, orchestrates enrichment and evaluation, applies post-processing, returns ranked result, emits events. |
+| **Routing API** | Validates request schema, orchestrates enrichment and strategy selection, applies post-processing, returns ranked result, emits events. |
 | **Context Enrichment** | Fetches merchant routing config, card/BIN metadata, FX rates, risk/fraud signals and PSP health. |
+| **Strategy Registry** | Maintains an ordered list of mutually exclusive routing strategies; selects the first strategy whose `canRoute()` predicate matches the context. |
+| **Rule-Based Strategy** | Evaluates versioned decision-tree rules to produce a prioritized PSP/PGSP list. |
+| **Direct Bank Strategy** | Routes directly to a bank-specific PGSP/PSP based on `issuerBin`. |
 | **Rule Repository** | Loads the active rule package from the central store, maintains in-memory cache, handles reload and rollback. |
 | **Evaluation Engine** | Walks the decision tree, evaluates predicates, computes per-PSP priority scores, returns ordered candidates. |
-| **Business Portal** | UI for business users to author, preview, test and publish decision-tree rules. |
+| **Business Portal** | UI for business users to author, preview, test and publish decision-tree rules and BIN mappings. |
 | **Metadata DB** | Stores package versions, active version pointers per channel/tenant, audit log and approval workflow state. |
 | **Object Store** | Immutable artifact storage for versioned rule packages (tar.gz/zip with manifest and checksums). |
 | **Event Bus** | Emits `route.decision` events for downstream dispatcher, analytics and audit consumers. |
@@ -29,8 +32,8 @@ The rendered component diagram is saved as `iroute-architecture.html`. Open it i
 3. Routing API normalizes the payload, calls AuthN/AuthZ to resolve merchant profile and permissions.
 4. Context Enrichment gathers merchant routing config, BIN/issuer, FX, risk score and PSP health/latency signals with short timeouts.
 5. Rule Repository resolves the active rule package for the merchant/channel (or pinned version) from local cache; on cache miss it fetches the active pointer from Metadata DB and downloads the artifact from Object Store.
-6. Evaluation Engine loads the decision tree and evaluates the enriched payment context, matching predicates and accumulating priority scores per PSP/PGSP.
-7. Engine applies tie-breakers (success rate, latency, cost) and produces a deterministic ordered list of candidates with matched-rule metadata.
+6. Strategy Registry iterates through registered strategies in priority order and selects the first strategy whose `canRoute()` predicate matches the enriched context (e.g. `DirectBankStrategy` if a BIN mapping exists, otherwise `RuleBasedStrategy`).
+7. The selected strategy produces a typed `RoutingDecision` object containing candidates, provenance (strategy name, version, matched rules, context fingerprint), and latency.
 8. Routing API applies capacity/health filters and a fallback default, then returns the ranked result to the merchant.
 9. Routing API emits a `route.decision` event to the Event Bus for the Dispatcher, analytics and audit log consumers.
 10. Dispatcher consumes the event and forwards the payment intent to the top-priority PSP, falling back to the next candidate on failure.
@@ -72,7 +75,53 @@ interface IRuleStore {
 }
 ```
 
-## 4. Decision Tree Evaluation Engine Design
+## 4. Strategy Registry & Decision Object
+
+### Strategy model
+
+Routing is handled by an ordered list of mutually exclusive strategies. Each strategy implements:
+
+- `name`: stable identifier.
+- `canRoute(context)`: returns `true` if the strategy applies to the context.
+- `route(context)`: returns a typed `RoutingDecision`.
+
+Out-of-the-box strategies:
+
+| Strategy | Selection predicate | Use case |
+|----------|---------------------|----------|
+| `DirectBankStrategy` | `issuerBin` has a mapping | Direct bank-to-PGSP rails |
+| `RuleBasedStrategy` | always true (registered last) | General decision-tree routing |
+
+Additional strategies (e.g. `PlaidOpenBankingStrategy`, `NetworkTokenStrategy`) can be registered without changing existing strategies.
+
+### RoutingDecision typed object
+
+Every route evaluation returns:
+
+```typescript
+interface RoutingDecision {
+  __type: 'RoutingDecision';
+  decisionId: string;
+  requestId: string;
+  ruleVersion: string;
+  candidates: Provider[];
+  excluded: Provider[];
+  fallbackUsed: boolean;
+  provenance: {
+    strategyName: string;
+    strategyVersion: string;
+    evaluatedAt: string;
+    matchedRules?: string[];
+    contextFingerprint?: object;
+  };
+  latencyMs: number;
+  decidedAt: string;
+}
+```
+
+The `__type` discriminator and `provenance` block guarantee provenance and make decisions auditable and replayable.
+
+## 5. Decision Tree Evaluation Engine Design
 
 ### Rule model
 
@@ -91,7 +140,7 @@ A rule package contains a tree of nodes. Each node has:
 4. **Scoring**: maintain a map `Map<PSP, CandidateScore>`. Actions add/subtract scores, set explicit priorities, or exclude candidates. Exclusion is final.
 5. **Tie-breaking**: after traversal, sort candidates by `(score desc, configuredPriority asc, psp.successRate desc, psp.latencyP99 asc)`.
 6. **Post-processing**: apply PSP health/capacity filters and append the configured fallback list if no candidate remains.
-7. **Output**: return ordered array of `{ psp, priority, score, matchedRules[], excluded: boolean }`.
+7. **Output**: return ordered array of `{ psp, priority, score, matchedRules[], excluded: boolean }` wrapped into a `RoutingDecision` by the `RuleBasedStrategy`.
 
 ### Key design choices
 
@@ -189,13 +238,22 @@ Business Portal / Git
 ```json
 {
   "routingDecisionId": "uuid",
+  "requestId": "pi-123",
   "ruleVersion": "2.3.1",
+  "strategy": "RuleBasedStrategy",
   "candidates": [
     { "pspId": "psp-a", "pgspId": null, "priority": 1, "score": 1250, "reasons": ["rule-001"], "estimatedLatencyMs": 120, "estimatedCostBps": 85 }
   ],
   "excluded": [],
   "fallbackUsed": false,
-  "explanation": {},
+  "provenance": {
+    "strategyName": "RuleBasedStrategy",
+    "strategyVersion": "2.3.1",
+    "evaluatedAt": "2026-10-10T12:00:00Z",
+    "matchedRules": ["rule-001"],
+    "contextFingerprint": { "amount": 100, "currency": "USD", "cardBrand": "visa" }
+  },
+  "latencyMs": 3,
   "decidedAt": "2026-10-10T12:00:00Z"
 }
 ```

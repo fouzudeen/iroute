@@ -15,7 +15,7 @@ export async function initEngine() {
   engine = await createEngine({ basePath: RULE_STORE_PATH, remoteUrl: RULE_STORE_URL });
   await engine.load('latest');
   ready = true;
-  logger.info({ version: engine._evaluator.version }, 'Routing engine ready');
+  logger.info({ version: engine._rulePackage.version, strategies: engine._registry.list() }, 'Routing engine ready');
   return engine;
 }
 
@@ -61,16 +61,16 @@ async function handleRoute(req, res) {
 
   try {
     const version = req.headers['x-rule-version'];
-    if (version && engine._evaluator?.version !== version) {
+    if (version && engine._rulePackage?.version !== version) {
       // Per-request version pinning: load the requested version into a fresh engine
       const pinned = await createEngine({ basePath: RULE_STORE_PATH, remoteUrl: RULE_STORE_URL });
       await pinned.load(version);
-      const result = await pinned.route(buildContext(payload));
-      return send(res, 200, formatResponse(result, started, payload.options));
+      const decision = await pinned.route(buildContext(payload));
+      return send(res, 200, formatResponse(decision, started, payload.options));
     }
 
-    const result = await engine.route(buildContext(payload));
-    return send(res, 200, formatResponse(result, started, payload.options));
+    const decision = await engine.route(buildContext(payload));
+    return send(res, 200, formatResponse(decision, started, payload.options));
   } catch (err) {
     logger.error({ err, paymentIntentId: payload.paymentIntentId }, 'Routing failed');
     const { status, body } = errorResponse(err);
@@ -99,37 +99,30 @@ function buildContext(payload) {
   };
 }
 
-function formatResponse(result, started, options = {}) {
-  const candidates = result.prioritizedProviders.slice(0, options.maxCandidates || 5).map(p => ({
-    pspId: p.id,
+function formatResponse(decision, started, options = {}) {
+  const candidates = decision.candidates.slice(0, options.maxCandidates || 5).map((p, index) => ({
+    pspId: p.type === 'psp' ? p.id : null,
     pgspId: p.type === 'pgsp' ? p.id : null,
-    priority: p.priority || 1,
+    priority: index + 1,
     score: p.score,
-    reasons: [p.ruleId],
+    reasons: p.ruleId ? [p.ruleId] : [p.bin ? `bin:${p.bin}` : decision.provenance.strategyName],
     estimatedLatencyMs: p.slaMs || null,
     estimatedCostBps: null
   }));
 
-  const excluded = [];
-
   const response = {
-    routingDecisionId: randomUUID(),
-    ruleVersion: result.version,
+    routingDecisionId: decision.decisionId,
+    requestId: decision.requestId,
+    ruleVersion: decision.ruleVersion,
+    strategy: decision.provenance.strategyName,
     candidates,
-    excluded,
-    fallbackUsed: candidates.length === 0,
-    decidedAt: new Date().toISOString()
+    excluded: decision.excluded,
+    fallbackUsed: decision.fallbackUsed,
+    provenance: options.includeExplanation ? decision.provenance : undefined,
+    latencyMs: decision.latencyMs,
+    decidedAt: decision.decidedAt
   };
 
-  if (options.includeExplanation) {
-    response.explanation = {
-      contextSnapshot: {},
-      matchedRules: result.appliedRules,
-      tieBreakers: []
-    };
-  }
-
-  response.latencyMs = Date.now() - started;
   return response;
 }
 

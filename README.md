@@ -16,7 +16,11 @@ npm start
 - **RuleLoader** — loads packages from a local store or remote URL.
 - **RuleValidator** — validates packages against a JSON Schema.
 - **DecisionTreeEvaluator** — recursively evaluates conditions and returns a prioritized provider list.
-- **RoutingEngine** — orchestrates loading, validation, context normalization, and evaluation.
+- **RoutingStrategy** — pluggable strategy interface for selecting a routing path.
+- **StrategyRegistry** — maintains an ordered list of mutually exclusive strategies and picks the first matching one.
+- **RuleBasedStrategy** — default strategy that evaluates decision-tree rules.
+- **DirectBankStrategy** — routes directly to a bank-specific PGSP/PSP based on `issuerBin`.
+- **RoutingEngine** — orchestrates loading, validation, context normalization, strategy selection, and evaluation.
 - **RulePackager** — creates immutable rule packages with SHA-256 checksums.
 - **HTTP Server** — exposes `POST /v1/route`, `GET /health/live`, and `GET /health/ready`.
 
@@ -68,7 +72,9 @@ X-Rule-Version: <optional semver, e.g. 2.3.1>
 ```json
 {
   "routingDecisionId": "uuid",
+  "requestId": "pi-123",
   "ruleVersion": "1.2.0",
+  "strategy": "RuleBasedStrategy",
   "candidates": [
     {
       "pspId": "psp-premium-eu",
@@ -82,6 +88,7 @@ X-Rule-Version: <optional semver, e.g. 2.3.1>
   ],
   "excluded": [],
   "fallbackUsed": false,
+  "latencyMs": 2,
   "decidedAt": "2026-10-10T12:00:00Z"
 }
 ```
@@ -120,6 +127,25 @@ Fields are dot-notated paths into the normalized context, e.g. `customer.riskSco
 
 See [`rules/example-rules.json`](rules/example-rules.json) for a full example and [`docs/RULE_AUTHORING.md`](docs/RULE_AUTHORING.md) for the complete guide.
 
+## BIN Mapping (Direct Bank Strategy)
+
+Direct bank-to-PGSP mappings are maintained in `rules/bin-mapping.json`:
+
+```json
+{
+  "mappings": {
+    "424242": {
+      "bankCode": "CHASE",
+      "providers": [
+        { "id": "pgsp-chase-direct", "type": "pgsp", "weight": 100 }
+      ]
+    }
+  }
+}
+```
+
+When a request includes a matching `issuerBin`, the `DirectBankStrategy` is selected before the rule-based strategy.
+
 ## Packaging Rules
 
 ```bash
@@ -149,8 +175,20 @@ This creates:
 | `LOG_LEVEL` | `info` | Pino log level |
 | `RULE_STORE_PATH` | `./rules` | Local rule package directory |
 | `RULE_STORE_URL` | — | Optional remote rule store base URL |
+| `BIN_MAPPING_PATH` | `./rules/bin-mapping.json` | Direct bank BIN-to-PGSP mapping |
 
 Copy `.env.example` to `.env` and adjust as needed.
+
+## Routing Strategies
+
+The engine supports multiple mutually exclusive strategies. The `StrategyRegistry` evaluates strategies in registration order and selects the first strategy whose `canRoute(context)` returns `true`.
+
+| Strategy | Selection | Implementation |
+|----------|-----------|----------------|
+| `DirectBankStrategy` | `issuerBin` exists in `BIN_MAPPING_PATH` | `src/strategies/direct-bank-strategy.js` |
+| `RuleBasedStrategy` | default fallback | `src/strategies/rule-based-strategy.js` |
+
+Add new strategies by extending `RoutingStrategy` and calling `engine.registerStrategy(newStrategy)`.
 
 ## Project Structure
 
@@ -158,6 +196,7 @@ Copy `.env.example` to `.env` and adjust as needed.
 .
 ├── .github/workflows/ci.yml
 ├── rules/
+│   ├── bin-mapping.json
 │   ├── example-rules.json
 │   ├── rules-1.2.0.json
 │   └── latest.json
@@ -165,10 +204,14 @@ Copy `.env.example` to `.env` and adjust as needed.
 │   ├── demo.js
 │   └── package-rules.js
 ├── src/
-│   ├── config/logger.js
-│   ├── context/context.js
-│   ├── engine/routing-engine.js
-│   ├── errors/errors.js
+│   ├── config/
+│   │   └── logger.js
+│   ├── context/
+│   │   └── context.js
+│   ├── engine/
+│   │   └── routing-engine.js
+│   ├── errors/
+│   │   └── errors.js
 │   ├── index.js
 │   ├── rules/
 │   │   ├── evaluator.js
@@ -176,17 +219,27 @@ Copy `.env.example` to `.env` and adjust as needed.
 │   │   ├── packager.js
 │   │   ├── schema.json
 │   │   └── validator.js
+│   ├── strategies/
+│   │   ├── direct-bank-strategy.js
+│   │   ├── registry.js
+│   │   ├── rule-based-strategy.js
+│   │   └── strategy.js
+│   ├── types.js
 │   └── server.js
 ├── tests/
 │   ├── engine.test.js
 │   ├── evaluator.test.js
 │   ├── integration.test.js
 │   ├── loader.test.js
+│   ├── strategy.test.js
 │   └── validator.test.js
 ├── ARCHITECTURE.md
 ├── README.md
 ├── IMPLEMENTATION.md
+├── docs/
+│   └── RULE_AUTHORING.md
 ├── eslint.config.js
+├── iroute-architecture.html
 └── package.json
 ```
 

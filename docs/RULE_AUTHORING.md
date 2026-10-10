@@ -121,7 +121,26 @@ Providers are returned in descending score order. If the same provider appears i
    npm test
    ```
 
-6. **Version immutably** — never edit `rules/rules-X.Y.Z.json` directly. Edit the source file and re-package.
+7. **Version immutably** — never edit `rules/rules-X.Y.Z.json` directly. Edit the source file and re-package.
+
+## Direct Bank BIN Mappings
+
+Some payments are routed through the Direct Bank strategy instead of decision-tree rules. BIN mappings live in `rules/bin-mapping.json` and are maintained by the Business Team.
+
+Each entry maps an `issuerBin` to a bank code and an ordered list of PGSP/PSP providers. When a request's `instrument.bin` matches an entry, the `DirectBankStrategy` is selected and the rule-based strategy is skipped.
+
+```json
+{
+  "mappings": {
+    "424242": {
+      "bankCode": "CHASE",
+      "providers": [
+        { "id": "pgsp-chase-direct", "type": "pgsp", "weight": 100 }
+      ]
+    }
+  }
+}
+```
 
 ## Example: Add a Merchant Whitelist
 

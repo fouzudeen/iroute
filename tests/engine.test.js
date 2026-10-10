@@ -4,7 +4,7 @@ import { createEngine } from '../src/index.js';
 import { RoutingError } from '../src/errors/errors.js';
 
 test('engine routes EU high-value visa transaction', async () => {
-  const engine = await createEngine({ basePath: './rules' });
+  const engine = await createEngine({ basePath: './rules', enableDirectBank: false });
   await engine.load('1.2.0');
 
   const result = await engine.route({
@@ -15,9 +15,10 @@ test('engine routes EU high-value visa transaction', async () => {
     cardBrand: 'visa'
   });
 
-  assert.strictEqual(result.version, '1.2.0');
-  assert.ok(result.matches > 0);
-  assert.strictEqual(result.prioritizedProviders[0].id, 'psp-premium-eu');
+  assert.strictEqual(result.ruleVersion, '1.2.0');
+  assert.ok(result.candidates.length > 0);
+  assert.strictEqual(result.candidates[0].id, 'psp-premium-eu');
+  assert.strictEqual(result.provenance.strategyName, 'RuleBasedStrategy');
 });
 
 test('engine refuses to route before load', async () => {
@@ -29,7 +30,7 @@ test('engine refuses to route before load', async () => {
 });
 
 test('engine includes requestId in result', async () => {
-  const engine = await createEngine({ basePath: './rules' });
+  const engine = await createEngine({ basePath: './rules', enableDirectBank: false });
   await engine.load('latest');
   const result = await engine.route({ amount: 10, currency: 'EUR' });
   assert.ok(result.requestId);

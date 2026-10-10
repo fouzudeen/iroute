@@ -48,8 +48,22 @@ test('POST /v1/route returns prioritized providers', async () => {
 
   assert.strictEqual(res.status, 200);
   assert.strictEqual(res.body.candidates[0].pspId, 'psp-premium-eu');
+  assert.strictEqual(res.body.strategy, 'RuleBasedStrategy');
   assert.ok(res.body.routingDecisionId);
   assert.ok(res.body.ruleVersion);
+});
+
+test('POST /v1/route uses DirectBankStrategy for mapped BIN', async () => {
+  const res = await request('/v1/route', 'POST', {
+    paymentIntentId: 'pi-bin',
+    merchantId: 'm-123',
+    amount: { value: 100, currency: 'EUR' },
+    instrument: { type: 'card', bin: '424242', network: 'visa', cardCountry: 'US' }
+  }, { 'Content-Type': 'application/json' });
+
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(res.body.strategy, 'DirectBankStrategy');
+  assert.strictEqual(res.body.candidates[0].pgspId, 'pgsp-chase-direct');
 });
 
 test('POST /v1/route rejects missing fields', async () => {
