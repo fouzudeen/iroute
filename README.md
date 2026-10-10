@@ -22,9 +22,20 @@ npm start
 - **DirectBankStrategy** — routes directly to a bank-specific PGSP/PSP based on `issuerBin`.
 - **RoutingEngine** — orchestrates loading, validation, context normalization, strategy selection, and evaluation.
 - **RulePackager** — creates immutable rule packages with SHA-256 checksums.
-- **HTTP Server** — exposes `POST /v1/route`, `GET /health/live`, and `GET /health/ready`.
+- **HTTP Server** — exposes `POST /v1/route`, `GET /health/live`, `GET /health/ready`, `/openapi.json`, and `/docs`.
+- **OpenAPI / Swagger** — API contract documented at `docs/openapi/openapi.yaml` and served interactively at `/docs`.
 
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full solution design.
+
+## API Documentation
+
+The API contract is documented with OpenAPI 3.1:
+
+- **YAML spec**: [`docs/openapi/openapi.yaml`](docs/openapi/openapi.yaml)
+- **JSON endpoint**: `GET /openapi.json`
+- **Swagger UI**: `GET /docs`
+
+After starting the server (`npm start`), open http://localhost:3000/docs in a browser to explore and test the endpoints interactively.
 
 ## API Contract
 
@@ -231,12 +242,15 @@ Add new strategies by extending `RoutingStrategy` and calling `engine.registerSt
 │   ├── evaluator.test.js
 │   ├── integration.test.js
 │   ├── loader.test.js
+│   ├── openapi.test.js
 │   ├── strategy.test.js
 │   └── validator.test.js
 ├── ARCHITECTURE.md
 ├── README.md
 ├── IMPLEMENTATION.md
 ├── docs/
+│   ├── openapi/
+│   │   └── openapi.yaml
 │   └── RULE_AUTHORING.md
 ├── eslint.config.js
 ├── iroute-architecture.html
