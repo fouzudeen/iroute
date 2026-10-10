@@ -1,0 +1,587 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "iRoute Payment Gateway Routing Engine",
+    "description": "Determines which Payment Service Provider (PSP) or Payment Gateway Service Provider (PGSP)\na payment request should be forwarded to. Supports multiple mutually exclusive routing\nstrategies and versioned decision-tree rules.\n",
+    "version": "0.2.0",
+    "contact": {
+      "name": "iRoute Engineering"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:3000",
+      "description": "Local development server"
+    },
+    {
+      "url": "https://api.iroute.example.com/v1",
+      "description": "Production server"
+    }
+  ],
+  "paths": {
+    "/v1/route": {
+      "post": {
+        "operationId": "routePayment",
+        "summary": "Route a payment intent to the best available PSP/PGSP",
+        "description": "Evaluates the payment context against the registered routing strategies and returns a\ntyped RoutingDecision with a prioritized list of candidates and provenance.\n",
+        "tags": [
+          "Routing"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RouteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful routing decision",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoutingDecision"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/RuleVersionNotFound"
+          },
+          "422": {
+            "$ref": "#/components/responses/NoCandidate"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/RuleStoreUnavailable"
+          }
+        }
+      }
+    },
+    "/health/live": {
+      "get": {
+        "operationId": "healthLive",
+        "summary": "Liveness probe",
+        "tags": [
+          "Health"
+        ],
+        "responses": {
+          "200": {
+            "description": "Service is alive",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "operationId": "healthReady",
+        "summary": "Readiness probe",
+        "tags": [
+          "Health"
+        ],
+        "responses": {
+          "200": {
+            "description": "Service is ready",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthStatus"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service is not ready",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "operationId": "getOpenApiSpec",
+        "summary": "OpenAPI specification in JSON format",
+        "tags": [
+          "Documentation"
+        ],
+        "responses": {
+          "200": {
+            "description": "OpenAPI JSON spec",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/docs": {
+      "get": {
+        "operationId": "getSwaggerUi",
+        "summary": "Swagger UI documentation",
+        "tags": [
+          "Documentation"
+        ],
+        "responses": {
+          "200": {
+            "description": "Swagger UI HTML page",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "RouteRequest": {
+        "type": "object",
+        "required": [
+          "paymentIntentId",
+          "merchantId",
+          "amount"
+        ],
+        "properties": {
+          "paymentIntentId": {
+            "type": "string",
+            "description": "Unique identifier for the payment intent.",
+            "example": "pi-123"
+          },
+          "merchantId": {
+            "type": "string",
+            "description": "Merchant identifier.",
+            "example": "m-123"
+          },
+          "amount": {
+            "$ref": "#/components/schemas/Amount"
+          },
+          "instrument": {
+            "$ref": "#/components/schemas/Instrument"
+          },
+          "context": {
+            "$ref": "#/components/schemas/PaymentContext"
+          },
+          "options": {
+            "$ref": "#/components/schemas/RouteOptions"
+          }
+        }
+      },
+      "Amount": {
+        "type": "object",
+        "required": [
+          "value",
+          "currency"
+        ],
+        "properties": {
+          "value": {
+            "type": "number",
+            "description": "Transaction amount in minor units if integer, major units if decimal.",
+            "example": 750
+          },
+          "currency": {
+            "type": "string",
+            "description": "ISO-4217 currency code.",
+            "example": "EUR"
+          }
+        }
+      },
+      "Instrument": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "card",
+              "wallet",
+              "bank_transfer",
+              "bnpl"
+            ],
+            "example": "card"
+          },
+          "bin": {
+            "type": "string",
+            "description": "Issuer Bank Identification Number.",
+            "example": "424242"
+          },
+          "cardCountry": {
+            "type": "string",
+            "description": "ISO-3166-1 alpha-2 country code of the card.",
+            "example": "DE"
+          },
+          "network": {
+            "type": "string",
+            "enum": [
+              "visa",
+              "mastercard",
+              "amex",
+              "discover",
+              "jcb"
+            ],
+            "example": "visa"
+          },
+          "tokenized": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "PaymentContext": {
+        "type": "object",
+        "properties": {
+          "mcc": {
+            "type": "string",
+            "description": "Merchant Category Code.",
+            "example": "5812"
+          },
+          "region": {
+            "type": "string",
+            "example": "EU"
+          },
+          "customerCountry": {
+            "type": "string",
+            "example": "DE"
+          },
+          "riskScore": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "example": 0.12
+          },
+          "threeDsRequested": {
+            "type": "boolean"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "RouteOptions": {
+        "type": "object",
+        "properties": {
+          "includeExplanation": {
+            "type": "boolean",
+            "default": false
+          },
+          "maxCandidates": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "default": 5
+          }
+        }
+      },
+      "RoutingDecision": {
+        "type": "object",
+        "required": [
+          "routingDecisionId",
+          "requestId",
+          "ruleVersion",
+          "strategy",
+          "candidates",
+          "excluded",
+          "fallbackUsed",
+          "latencyMs",
+          "decidedAt"
+        ],
+        "properties": {
+          "routingDecisionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "ruleVersion": {
+            "type": "string"
+          },
+          "strategy": {
+            "type": "string",
+            "description": "Name of the selected routing strategy.",
+            "example": "RuleBasedStrategy"
+          },
+          "candidates": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Candidate"
+            }
+          },
+          "excluded": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExcludedProvider"
+            }
+          },
+          "fallbackUsed": {
+            "type": "boolean"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/RoutingProvenance"
+          },
+          "latencyMs": {
+            "type": "integer"
+          },
+          "decidedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "Candidate": {
+        "type": "object",
+        "required": [
+          "priority",
+          "score",
+          "reasons"
+        ],
+        "properties": {
+          "pspId": {
+            "type": "string",
+            "nullable": true
+          },
+          "pgspId": {
+            "type": "string",
+            "nullable": true
+          },
+          "priority": {
+            "type": "integer",
+            "description": "1 = highest priority."
+          },
+          "score": {
+            "type": "number"
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "estimatedLatencyMs": {
+            "type": "integer",
+            "nullable": true
+          },
+          "estimatedCostBps": {
+            "type": "integer",
+            "nullable": true
+          }
+        }
+      },
+      "ExcludedProvider": {
+        "type": "object",
+        "properties": {
+          "pspId": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "RoutingProvenance": {
+        "type": "object",
+        "required": [
+          "strategyName",
+          "strategyVersion",
+          "evaluatedAt"
+        ],
+        "properties": {
+          "strategyName": {
+            "type": "string"
+          },
+          "strategyVersion": {
+            "type": "string"
+          },
+          "evaluatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "matchedRules": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "contextFingerprint": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "HealthStatus": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "example": "alive"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "details": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Invalid request",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "code": "INVALID_REQUEST",
+              "message": "Missing required fields"
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "Missing or invalid credentials",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "code": "UNAUTHORIZED"
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "Merchant not allowed",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "code": "FORBIDDEN"
+            }
+          }
+        }
+      },
+      "RuleVersionNotFound": {
+        "description": "Requested rule version does not exist",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "code": "RULE_VERSION_NOT_FOUND"
+            }
+          }
+        }
+      },
+      "NoCandidate": {
+        "description": "No PSP matched and no fallback configured",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "code": "NO_CANDIDATE"
+            }
+          }
+        }
+      },
+      "RateLimited": {
+        "description": "Too many requests",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "code": "RATE_LIMITED"
+            }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "Unexpected evaluation failure",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "code": "INTERNAL_ERROR"
+            }
+          }
+        }
+      },
+      "RuleStoreUnavailable": {
+        "description": "Unable to load rule package",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "code": "RULE_STORE_UNAVAILABLE"
+            }
+          }
+        }
+      }
+    }
+  }
+}

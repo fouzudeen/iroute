@@ -9,6 +9,7 @@ import { RoutingError, ValidationError, RuleNotFoundError } from './errors/error
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PORT = Number(process.env.PORT || 3000);
+const OPENAPI_JSON_PATH = resolve(__dirname, '../docs/openapi/openapi.json');
 const RULE_STORE_PATH = process.env.RULE_STORE_PATH || './rules';
 const RULE_STORE_URL = process.env.RULE_STORE_URL || undefined;
 
@@ -129,8 +130,6 @@ function formatResponse(decision, options = {}) {
   return response;
 }
 
-const OPENAPI_PATH = resolve(__dirname, '../docs/openapi/openapi.yaml');
-
 const swaggerUiHtml = specUrl => `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -164,10 +163,9 @@ export const server = createServer(async (req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/openapi.json') {
     try {
-      const yaml = await readFile(OPENAPI_PATH, 'utf-8');
-      // Minimal YAML-to-JSON conversion for the static spec.
-      const json = yamlToJson(yaml);
-      return send(res, 200, json);
+      const json = await readFile(OPENAPI_JSON_PATH, 'utf-8');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(json);
     } catch (err) {
       logger.error({ err }, 'Failed to load OpenAPI spec');
       return send(res, 500, { code: 'INTERNAL_ERROR', message: 'OpenAPI spec unavailable' });
@@ -185,89 +183,6 @@ export const server = createServer(async (req, res) => {
 
   return send(res, 404, { code: 'NOT_FOUND', message: `Unknown route ${req.method} ${url.pathname}` });
 });
-
-function yamlToJson(yaml) {
-  // Lightweight YAML-to-JSON converter sufficient for the OpenAPI spec.
-  // For production, prefer a real YAML parser (e.g. yaml/js-yaml).
-  const lines = yaml.split('\n');
-  const indentStack = [{ indent: -1, obj: {}, key: null, mode: 'object' }];
-
-  for (const rawLine of lines) {
-    const line = rawLine.split('#')[0];
-    if (!line.trim()) continue;
-
-    const indent = line.search(/\S/);
-    const trimmed = line.trim();
-
-    if (trimmed.startsWith('- ')) {
-      const value = trimmed.slice(2).trim();
-      const top = indentStack[indentStack.length - 1];
-      if (top.mode === 'array') {
-        if (value.includes(':')) {
-          const obj = {};
-          top.obj.push(obj);
-          const [k, v] = value.split(/:\s*/, 2);
-          if (v) {
-            obj[k.trim()] = parseValue(v.trim());
-          } else {
-            indentStack.push({ indent, obj, key: k.trim(), mode: 'object' });
-          }
-        } else {
-          top.obj.push(parseValue(value));
-        }
-      }
-      continue;
-    }
-
-    if (!trimmed.includes(':')) continue;
-    const colonIndex = trimmed.indexOf(':');
-    const key = trimmed.slice(0, colonIndex).trim();
-    let value = trimmed.slice(colonIndex + 1).trim();
-
-    while (indentStack.length > 1 && indent <= indentStack[indentStack.length - 1].indent) {
-      indentStack.pop();
-    }
-
-    const parent = indentStack[indentStack.length - 1];
-
-    if (!value) {
-      const child = {};
-      if (parent.mode === 'object') {
-        parent.obj[key] = child;
-      }
-      indentStack.push({ indent, obj: child, key, mode: 'object' });
-    } else if (value === '[]') {
-      const arr = [];
-      if (parent.mode === 'object') {
-        parent.obj[key] = arr;
-      }
-      indentStack.push({ indent, obj: arr, key, mode: 'array' });
-    } else if (value.startsWith('[') && value.endsWith(']')) {
-      const arr = value.slice(1, -1).split(',').map(s => parseValue(s.trim()));
-      if (parent.mode === 'object') {
-        parent.obj[key] = arr;
-      }
-    } else {
-      if (parent.mode === 'object') {
-        parent.obj[key] = parseValue(value);
-      }
-    }
-  }
-
-  return indentStack[0].obj;
-}
-
-function parseValue(value) {
-  if (value === 'true') return true;
-  if (value === 'false') return false;
-  if (value === 'null' || value === '~') return null;
-  if (/^-?\d+$/.test(value)) return Number(value);
-  if (/^-?\d+\.\d+$/.test(value)) return Number(value);
-  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-    return value.slice(1, -1);
-  }
-  return value;
-}
 
 export function startServer(port = DEFAULT_PORT) {
   return new Promise((resolve) => {
