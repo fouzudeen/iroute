@@ -2,7 +2,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert';
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { server, initEngine, startServer } from '../src/server.js';
+import { initEngine, startServer } from '../src/server.js';
 
 const PORT = 3998;
 const BASE = `http://127.0.0.1:${PORT}`;

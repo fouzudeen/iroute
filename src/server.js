@@ -5,7 +5,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createEngine } from './index.js';
 import { logger } from './config/logger.js';
-import { RoutingError, ValidationError, RuleNotFoundError } from './errors/errors.js';
+import { ValidationError, RuleNotFoundError } from './errors/errors.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PORT = Number(process.env.PORT || 3000);

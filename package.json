@@ -19,6 +19,7 @@
   "dependencies": {
     "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1",
+    "better-sqlite3": "^12.0.0",
     "pino": "^9.5.0",
     "semver": "^7.6.3"
   },
@@ -26,6 +27,12 @@
     "eslint": "^9.13.0",
     "pino-pretty": "^11.3.0"
   },
-  "keywords": ["payments", "routing", "psp", "pgsp", "decision-tree"],
+  "keywords": [
+    "payments",
+    "routing",
+    "psp",
+    "pgsp",
+    "decision-tree"
+  ],
   "license": "MIT"
 }

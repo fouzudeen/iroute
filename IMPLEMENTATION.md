@@ -24,10 +24,16 @@
 │   │   └── routing-engine.js
 │   ├── errors/
 │   │   └── errors.js
+│   ├── repository/
+│   │   ├── rule-store.js      # IRuleStore interface (PostgreSQL-ready)
+│   │   └── sqlite-rule-store.js
+│   ├── store/
+│   │   └── schema.sql         # SQLite DDL for trees, packages, activations, audit
 │   └── rules/
 │       ├── loader.js
 │       ├── validator.js
 │       ├── evaluator.js
+│       ├── forest-evaluator.js
 │       ├── packager.js
 │       └── schema.json
 └── tests/
@@ -39,9 +45,11 @@
 | Module | File | Responsibility |
 |---|---|---|
 | `RoutingEngine` | `src/engine/routing-engine.js` | Orchestrates rule loading, validation, normalization, and evaluation. Exposes `load(version)` and `route(paymentContext)`. |
-| `RuleLoader` | `src/rules/loader.js` | Loads a versioned rule package from local store (`RULE_STORE_PATH`) or remote URL (`RULE_STORE_URL`). Supports `latest`. |
-| `RuleValidator` | `src/rules/validator.js` | Validates rule packages against JSON Schema using Ajv. |
+| `RuleLoader` | `src/rules/loader.js` | Loads a versioned rule package from RDBMS (`RULE_STORE_DB_URL`), local store (`RULE_STORE_PATH`), or remote URL (`RULE_STORE_URL`). Supports `latest`. |
+| `RuleValidator` | `src/rules/validator.js` | Validates rule packages (single tree or forest) against JSON Schema using Ajv. |
 | `DecisionTreeEvaluator` | `src/rules/evaluator.js` | Recursively evaluates `and`/`or`/`not` condition trees and produces a prioritized provider list. |
+| `ForestEvaluator` | `src/rules/forest-evaluator.js` | Evaluates a network of decision trees and merges/de-duplicates/prioritizes the combined results. |
+| `IRuleStore` / `SqliteRuleStore` | `src/repository/rule-store.js`, `src/repository/sqlite-rule-store.js` | Repository abstraction and SQLite implementation for trees, packages, activations, and audit log. |
 | `RulePackager` | `src/rules/packager.js` | Builds immutable, versioned rule packages with a SHA-256 checksum and a `latest.json` pointer. |
 | `ContextNormalizer` | `src/context/context.js` | Normalizes raw payment context (upper-cases country/currency, lower-cases payment method/card brand). |
 | Error classes | `src/errors/errors.js` | `RoutingError`, `ValidationError`, `RuleNotFoundError`. |
@@ -104,6 +112,8 @@ Complexity: O(R × C) where R = rules, C = average conditions per rule.
 | `LOG_LEVEL` | Pino log level (`info`, `debug`, `warn`, `error`) |
 | `RULE_STORE_PATH` | Local directory containing rule packages |
 | `RULE_STORE_URL` | Optional remote rule store base URL |
+| `RULE_STORE_DB_URL` | Optional SQLite file path (e.g. `./data/rules.db`); enables RDBMS-backed store |
+| `RULE_ENVIRONMENT` | Environment for active package resolution (`dev`, `staging`, `production`) |
 
 See `.env.example`.
 

@@ -4,7 +4,7 @@ export class DecisionTreeEvaluator {
   constructor(rulePackage, logger) {
     this.version = rulePackage.version;
     this.rules = [...rulePackage.rules].sort((a, b) => b.priority - a.priority);
-    this.logger = logger.child({ module: 'DecisionTreeEvaluator' });
+    this.logger = logger?.child ? logger.child({ module: 'DecisionTreeEvaluator' }) : logger;
   }
 
   evaluate(context) {
@@ -54,7 +54,13 @@ export class DecisionTreeEvaluator {
       case 'lte': return actual <= value;
       case 'in': return Array.isArray(value) && value.includes(actual);
       case 'notIn': return Array.isArray(value) && !value.includes(actual);
-      case 'regex': return new RegExp(value).test(String(actual));
+      case 'regex': {
+        try {
+          return new RegExp(value).test(String(actual));
+        } catch {
+          throw new RoutingError(`Invalid regex in rule condition: ${value}`);
+        }
+      }
       default:
         throw new RoutingError(`Unknown operator: ${operator}`);
     }

@@ -1,13 +1,14 @@
 import { RoutingStrategy } from './strategy.js';
 import { DecisionTreeEvaluator } from '../rules/evaluator.js';
+import { ForestEvaluator } from '../rules/forest-evaluator.js';
 import { createRoutingDecision } from '../types.js';
 import { randomUUID } from 'node:crypto';
 
 export class RuleBasedStrategy extends RoutingStrategy {
   constructor(rulePackage, options = {}) {
     super('RuleBasedStrategy', options);
-    this._evaluator = new DecisionTreeEvaluator(rulePackage, options.logger);
-    this._ruleVersion = rulePackage.version;
+    this._rulePackage = rulePackage;
+    this._logger = options.logger;
   }
 
   canRoute(_context) {
@@ -16,7 +17,9 @@ export class RuleBasedStrategy extends RoutingStrategy {
   }
 
   route(context, { startedAt = Date.now() } = {}) {
-    const raw = this._evaluator.evaluate(context);
+    const raw = this._rulePackage.forest
+      ? new ForestEvaluator({ trees: this._rulePackage.trees, logger: this._logger }).evaluate(context)
+      : new DecisionTreeEvaluator(this._rulePackage, this._logger).evaluate(context);
 
     const candidates = raw.prioritizedProviders.map(p => ({
       id: p.id,
@@ -36,7 +39,7 @@ export class RuleBasedStrategy extends RoutingStrategy {
       fallbackUsed: candidates.length === 0,
       provenance: {
         strategyName: this.name,
-        strategyVersion: this._ruleVersion,
+        strategyVersion: this._rulePackage.version,
         evaluatedAt: new Date().toISOString(),
         matchedRules: raw.appliedRules,
         contextFingerprint: this._fingerprint(context)

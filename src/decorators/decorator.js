@@ -23,7 +23,7 @@ export class DecisionDecorator {
    * @param {import('../types.js').PaymentContext} context
    * @returns {import('../types.js').RoutingDecision}
    */
-  decorate(decision, context) {
+  decorate(_decision, _context) {
     throw new Error(`Decorator ${this.name} must implement decorate()`);
   }
 }
