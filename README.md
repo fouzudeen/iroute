@@ -173,7 +173,10 @@ This creates:
 | Script | Description |
 |--------|-------------|
 | `npm start` | Start the HTTP server |
-| `npm test` | Run the test suite |
+| `npm test` | Run the test suite with human-readable output |
+| `npm run test:tap` | Run the test suite with TAP output |
+| `npm run test:ci` | Run tests and write a TAP report to `reports/test-results.tap` |
+| `npm run test:report` | Run tests and generate an HTML report at `reports/test-report.html` |
 | `npm run lint` | Run ESLint |
 | `npm run package:rules` | Package a rule source file |
 
@@ -213,7 +216,8 @@ Add new strategies by extending `RoutingStrategy` and calling `engine.registerSt
 │   └── latest.json
 ├── scripts/
 │   ├── demo.js
-│   └── package-rules.js
+│   ├── package-rules.js
+│   └── test-report.js
 ├── src/
 │   ├── config/
 │   │   └── logger.js
@@ -245,11 +249,13 @@ Add new strategies by extending `RoutingStrategy` and calling `engine.registerSt
 │   ├── openapi.test.js
 │   ├── strategy.test.js
 │   └── validator.test.js
+├── reports/                # generated test reports (gitignored)
 ├── ARCHITECTURE.md
 ├── README.md
 ├── IMPLEMENTATION.md
 ├── docs/
 │   ├── openapi/
+│   │   ├── openapi.json
 │   │   └── openapi.yaml
 │   └── RULE_AUTHORING.md
 ├── eslint.config.js

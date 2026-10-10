@@ -28,7 +28,18 @@ jobs:
         run: npm run lint
 
       - name: Test
-        run: npm test
+        run: npm run test:ci
+
+      - name: Generate HTML test report
+        if: always()
+        run: node scripts/test-report.js reports/test-results.tap
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report-node-${{ matrix.node-version }}
+          path: reports/
 
       - name: Validate example rules
         run: npm run package:rules -- rules/example-rules.json 1.2.0 "CI validation"
