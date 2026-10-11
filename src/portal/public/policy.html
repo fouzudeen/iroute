@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Policy Editor | iRoute</title>
+  <link rel="stylesheet" href="/portal/public/styles.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <a href="/portal" class="btn" style="margin-bottom:0.5rem">← Dashboard</a>
+        <h1 id="policy-name">Policy</h1>
+      </div>
+      <div class="toolbar">
+        <button class="btn btn-primary" id="add-rule">+ Add Rule</button>
+        <button class="btn btn-success" id="save-draft">Save Draft</button>
+        <button class="btn btn-warning" id="publish">Publish</button>
+      </div>
+    </header>
+
+    <div id="badges" class="toolbar"></div>
+
+    <div class="grid-2">
+      <div>
+        <div class="card">
+          <h2>Rules</h2>
+          <ul id="rules" class="rule-list"></ul>
+        </div>
+      </div>
+      <div class="simulator">
+        <h2>Preview Decision</h2>
+        <div class="form-group">
+          <label>Amount</label>
+          <input type="number" id="sim-amount" value="100">
+        </div>
+        <div class="form-group">
+          <label>Currency</label>
+          <input type="text" id="sim-currency" value="EUR">
+        </div>
+        <div class="form-group">
+          <label>Country</label>
+          <input type="text" id="sim-country" value="DE">
+        </div>
+        <div class="form-group">
+          <label>Card Brand</label>
+          <input type="text" id="sim-card" value="visa">
+        </div>
+        <button class="btn btn-primary" id="simulate">Preview</button>
+        <div id="sim-result" style="margin-top:1rem"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop hidden" id="rule-modal">
+    <div class="modal">
+      <h2 id="rule-modal-title">Add Rule</h2>
+      <div class="form-group">
+        <label>Rule ID</label>
+        <input type="text" id="rule-id" placeholder="high-value-eu">
+      </div>
+      <div class="form-group">
+        <label>Priority</label>
+        <input type="number" id="rule-priority" value="10">
+      </div>
+      <div class="form-group">
+        <label>Condition JSON</label>
+        <textarea id="rule-condition" placeholder='{ "operator": "eq", "field": "currency", "value": "EUR" }'></textarea>
+      </div>
+      <div class="form-group">
+        <label>Actions JSON</label>
+        <textarea id="rule-actions" placeholder='{ "providers": [{"id":"psp-eu","type":"psp","weight":100}] }'></textarea>
+      </div>
+      <div class="toolbar">
+        <button class="btn btn-primary" id="save-rule">Save</button>
+        <button class="btn" id="cancel-rule">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { api, el, fmtDate, confirmAction, showToast } from '/portal/public/app.js';
+
+    const treeKey = window.location.pathname.split('/').pop();
+    let policy = null;
+    let versions = [];
+    let rules = [];
+
+    async function load() {
+      const [p, h] = await Promise.all([api(`/policies/${treeKey}`), api(`/policies/${treeKey}/history`)]);
+      policy = p.policy;
+      versions = h.versions;
+      const draft = versions.find(v => !v.publishedAt);
+      const live = versions.find(v => v.isActive);
+      const source = draft || live || versions[versions.length - 1];
+      rules = source ? (await api(`/policies/${treeKey}/history`)).versions.find(v => v.version === source.version)?.rulesJson
+        ? JSON.parse((await api(`/policies/${treeKey}/history`)).versions.find(v => v.version === source.version).rulesJson).rules
+        : [] : [];
+      document.getElementById('policy-name').textContent = policy.name;
+      renderBadges(policy, draft);
+      renderRules();
+    }
+
+    function renderBadges(policy, draft) {
+      const b = document.getElementById('badges');
+      b.innerHTML = '';
+      b.appendChild(el('span', { class: `badge ${policy.liveVersion ? 'live' : 'draft'}` }, policy.liveVersion ? 'LIVE' : 'DRAFT'));
+      if (draft) b.appendChild(el('span', { class: 'badge draft' }, 'UNSAVED DRAFT'));
+      if (hasCatchAll(rules)) b.appendChild(el('span', { class: 'badge live' }, 'DEFAULT RULE'));
+    }
+
+    function hasCatchAll(list) {
+      return list.some(r => r.condition && (r.condition.operator === 'and' && !r.condition.conditions?.length));
+    }
+
+    function renderRules() {
+      const list = document.getElementById('rules');
+      list.innerHTML = '';
+      if (!rules.length) {
+        list.appendChild(el('li', { class: 'rule-item' }, 'No rules yet. Add one to start.'));
+        return;
+      }
+      for (const r of [...rules].sort((a, b) => b.priority - a.priority)) {
+        const sentence = r.description || `When ${formatCondition(r.condition)}, route to ${(r.actions?.providers || []).map(p => p.id).join(', ')}.`;
+        list.appendChild(el('li', { class: 'rule-item' },
+          el('strong', {}, sentence),
+          el('div', { class: 'rule-meta' }, `id: ${r.id}, priority: ${r.priority}`)
+        ));
+      }
+    }
+
+    function formatCondition(c) {
+      if (!c || !c.operator) return 'true';
+      if (c.operator === 'and') return c.conditions.map(formatCondition).join(' AND ');
+      if (c.operator === 'or') return `(${c.conditions.map(formatCondition).join(' OR ')})`;
+      return `${c.field} ${c.operator} ${Array.isArray(c.value) ? c.value.join(', ') : c.value}`;
+    }
+
+    document.getElementById('add-rule').addEventListener('click', () => {
+      document.getElementById('rule-modal').classList.remove('hidden');
+      document.getElementById('rule-id').value = '';
+      document.getElementById('rule-priority').value = '10';
+      document.getElementById('rule-condition').value = '{\n  "operator": "eq",\n  "field": "currency",\n  "value": "EUR"\n}';
+      document.getElementById('rule-actions').value = '{\n  "providers": [\n    { "id": "psp-eu", "type": "psp", "weight": 100 }\n  ]\n}';
+    });
+
+    document.getElementById('cancel-rule').addEventListener('click', () => {
+      document.getElementById('rule-modal').classList.add('hidden');
+    });
+
+    document.getElementById('save-rule').addEventListener('click', () => {
+      try {
+        const id = document.getElementById('rule-id').value.trim() || `rule-${Date.now()}`;
+        const priority = Number(document.getElementById('rule-priority').value);
+        const condition = JSON.parse(document.getElementById('rule-condition').value);
+        const actions = JSON.parse(document.getElementById('rule-actions').value);
+        rules.push({ id, priority, condition, actions });
+        document.getElementById('rule-modal').classList.add('hidden');
+        renderRules();
+      } catch (err) {
+        alert('Invalid JSON: ' + err.message);
+      }
+    });
+
+    document.getElementById('save-draft').addEventListener('click', async () => {
+      if (!hasCatchAll(rules) && !confirmAction('No catch-all rule present. Save anyway?')) return;
+      try {
+        await api(`/policies/${treeKey}/draft`, {
+          method: 'POST',
+          body: JSON.stringify({ rules, createdBy: 'portal-user' })
+        });
+        showToast('Draft saved');
+        await load();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+
+    document.getElementById('publish').addEventListener('click', async () => {
+      if (!confirmAction('Publish and activate this version?')) return;
+      try {
+        await api(`/policies/${treeKey}/draft`, {
+          method: 'POST',
+          body: JSON.stringify({ rules, createdBy: 'portal-user' })
+        });
+        const h = await api(`/policies/${treeKey}/history`);
+        const draftVersion = h.versions.find(v => !v.publishedAt)?.version;
+        if (!draftVersion) throw new Error('No draft to publish');
+        await api(`/policies/${treeKey}/publish`, {
+          method: 'POST',
+          body: JSON.stringify({ version: draftVersion, createdBy: 'portal-user' })
+        });
+        showToast('Published and activated');
+        await load();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+
+    document.getElementById('simulate').addEventListener('click', async () => {
+      const h = await api(`/policies/${treeKey}/history`);
+      const version = h.versions.find(v => !v.publishedAt)?.version || h.versions.find(v => v.isActive)?.version;
+      if (!version) {
+        document.getElementById('sim-result').innerHTML = '<p class="error">No version to simulate</p>';
+        return;
+      }
+      const context = {
+        amount: Number(document.getElementById('sim-amount').value),
+        currency: document.getElementById('sim-currency').value,
+        country: document.getElementById('sim-country').value,
+        cardBrand: document.getElementById('sim-card').value
+      };
+      try {
+        const result = await api('/simulate', {
+          method: 'POST',
+          body: JSON.stringify({ treeKey, version, context })
+        });
+        const div = document.getElementById('sim-result');
+        div.innerHTML = '';
+        div.appendChild(el('p', { class: 'success' }, `${result.matches} rule(s) matched`));
+        if (result.candidates.length) {
+          const ul = el('ul', {});
+          for (const c of result.candidates) {
+            ul.appendChild(el('li', {}, `${c.priority}. ${c.pspId || c.pgspId} (score ${c.score})`));
+          }
+          div.appendChild(ul);
+        }
+      } catch (err) {
+        document.getElementById('sim-result').innerHTML = `<p class="error">${err.message}</p>`;
+      }
+    });
+
+    load().catch(err => document.body.prepend(el('div', { class: 'card error' }, err.message)));
+  </script>
+</body>
+</html>

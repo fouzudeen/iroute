@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>iRoute Business Portal</title>
+  <link rel="stylesheet" href="/portal/public/styles.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Routing Policies</h1>
+      <button class="btn btn-primary" id="new-policy">+ New Policy</button>
+    </header>
+    <div id="policies"></div>
+  </div>
+
+  <div class="modal-backdrop hidden" id="policy-modal">
+    <div class="modal">
+      <h2>New Policy</h2>
+      <div class="form-group">
+        <label for="np-key">Key</label>
+        <input type="text" id="np-key" placeholder="eu-cards">
+      </div>
+      <div class="form-group">
+        <label for="np-name">Name</label>
+        <input type="text" id="np-name" placeholder="EU Card Payments">
+      </div>
+      <div class="form-group">
+        <label for="np-desc">Description</label>
+        <input type="text" id="np-desc" placeholder="Rules for EU card transactions">
+      </div>
+      <div class="toolbar">
+        <button class="btn btn-primary" id="save-policy">Create</button>
+        <button class="btn" id="cancel-policy">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { api, el, fmtDate } from '/portal/public/app.js';
+
+    const container = document.getElementById('policies');
+    const modal = document.getElementById('policy-modal');
+
+    function render(policies) {
+      container.innerHTML = '';
+      if (!policies.length) {
+        container.appendChild(el('div', { class: 'card' }, 'No policies yet. Create one to get started.'));
+        return;
+      }
+      for (const p of policies) {
+        const status = p.liveVersion ? 'live' : (p.draftCount ? 'draft' : 'rolled');
+        const card = el('div', { class: 'card' },
+          el('div', { style: 'display:flex; justify-content:space-between; align-items:flex-start' },
+            el('div', {},
+              el('h3', {}, p.name),
+              el('p', { class: 'rule-meta' }, p.description || 'No description')
+            ),
+            el('span', { class: `badge ${status}` }, status)
+          ),
+          el('p', {}, `Live: ${p.liveVersion ? `${p.liveVersion.version} by ${p.liveVersion.createdBy || 'unknown'} at ${fmtDate(p.liveVersion.publishedAt)}` : 'none'}`),
+          el('p', { class: 'rule-meta' }, `${p.versionCount} versions, ${p.draftCount} drafts`),
+          el('div', { class: 'toolbar' },
+            el('a', { href: `/portal/policy/${p.treeKey}`, class: 'btn btn-primary' }, 'Edit'),
+            el('a', { href: `/portal/policy/${p.treeKey}/history`, class: 'btn' }, 'History')
+          )
+        );
+        container.appendChild(card);
+      }
+    }
+
+    async function load() {
+      try {
+        const { policies } = await api('/policies');
+        render(policies);
+      } catch (err) {
+        container.innerHTML = '';
+        container.appendChild(el('div', { class: 'card error' }, `Failed to load policies: ${err.message}`));
+      }
+    }
+
+    document.getElementById('new-policy').addEventListener('click', () => modal.classList.remove('hidden'));
+    document.getElementById('cancel-policy').addEventListener('click', () => modal.classList.add('hidden'));
+    document.getElementById('save-policy').addEventListener('click', async () => {
+      const body = {
+        treeKey: document.getElementById('np-key').value.trim(),
+        name: document.getElementById('np-name').value.trim(),
+        description: document.getElementById('np-desc').value.trim(),
+        criteria: {}
+      };
+      try {
+        await api('/policies', { method: 'POST', body: JSON.stringify(body) });
+        modal.classList.add('hidden');
+        await load();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+
+    load();
+  </script>
+</body>
+</html>

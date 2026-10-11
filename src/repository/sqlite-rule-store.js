@@ -64,6 +64,18 @@ export class SqliteRuleStore extends IRuleStore {
     return row ? this._hydrateTree(row) : null;
   }
 
+  async updateTree(id, { name, description, criteria }) {
+    this.db.prepare(
+      `UPDATE decision_trees
+       SET name = COALESCE(?, name),
+           description = COALESCE(?, description),
+           criteria_json = COALESCE(?, criteria_json),
+           updated_at = datetime('now')
+       WHERE id = ?`
+    ).run(name, description, criteria ? JSON.stringify(criteria) : null, id);
+    return this.getTreeById(id);
+  }
+
   async getTreeById(id) {
     const row = this.db.prepare('SELECT * FROM decision_trees WHERE id = ?').get(id);
     return row ? this._hydrateTree(row) : null;
@@ -125,11 +137,32 @@ export class SqliteRuleStore extends IRuleStore {
     return pkg;
   }
 
+  async getPackageById(id) {
+    const row = this.db.prepare('SELECT * FROM rule_packages WHERE id = ?').get(id);
+    return row ? this._hydratePackage(row) : null;
+  }
+
   async getPackage(treeId, version) {
     const row = this.db.prepare(
       'SELECT * FROM rule_packages WHERE decision_tree_id = ? AND version = ?'
     ).get(treeId, version);
     return row ? this._hydratePackage(row) : null;
+  }
+
+  async listDrafts(treeId) {
+    const rows = this.db.prepare(
+      'SELECT * FROM rule_packages WHERE decision_tree_id = ? AND published_at IS NULL ORDER BY created_at DESC'
+    ).all(treeId);
+    return rows.map(r => this._hydratePackage(r));
+  }
+
+  async setPackagePublished(id) {
+    this.db.prepare('UPDATE rule_packages SET published_at = datetime(\'now\') WHERE id = ?').run(id);
+    return this.getPackageById(id);
+  }
+
+  async deletePackage(id) {
+    this.db.prepare('DELETE FROM rule_packages WHERE id = ?').run(id);
   }
 
   async listPackages(treeId) {
@@ -154,7 +187,7 @@ export class SqliteRuleStore extends IRuleStore {
     upsert.run(randomUUID(), treeId, pkg.id, env, scope, scopeValue, actor);
 
     // Update active pointer on tree row for quick lookups.
-    this.db.prepare("UPDATE decision_trees SET active_version_id = ?, updated_at = datetime('now') WHERE id = ?")
+    this.db.prepare('UPDATE decision_trees SET active_version_id = ?, updated_at = datetime(\'now\') WHERE id = ?')
       .run(pkg.id, treeId);
 
     await this.logAudit({ decisionTreeId: treeId, rulePackageId: pkg.id, action: 'ACTIVATE', actor, payload: { environment: env, scope, scopeValue, version } });
@@ -194,6 +227,22 @@ export class SqliteRuleStore extends IRuleStore {
     return pkg;
   }
 
+  async listAudit(treeKey = null, limit = 20) {
+    let rows;
+    if (treeKey) {
+      const tree = await this.getTreeByKey(treeKey);
+      const treeId = tree ? tree.id : null;
+      rows = this.db.prepare(
+        'SELECT * FROM audit_log WHERE decision_tree_id = ? ORDER BY created_at DESC LIMIT ?'
+      ).all(treeId, limit);
+    } else {
+      rows = this.db.prepare(
+        'SELECT * FROM audit_log ORDER BY created_at DESC LIMIT ?'
+      ).all(limit);
+    }
+    return rows.map(r => this._hydrateAudit(r));
+  }
+
   async logAudit({ decisionTreeId = null, rulePackageId = null, action, actor = 'system', payload = {} }) {
     const stmt = this.db.prepare(
       `INSERT INTO audit_log (id, decision_tree_id, rule_package_id, action, actor, payload_json)
@@ -231,6 +280,18 @@ export class SqliteRuleStore extends IRuleStore {
       createdBy: row.created_by,
       createdAt: row.created_at,
       publishedAt: row.published_at
+    };
+  }
+
+  _hydrateAudit(row) {
+    return {
+      id: row.id,
+      decisionTreeId: row.decision_tree_id,
+      rulePackageId: row.rule_package_id,
+      action: row.action,
+      actor: row.actor,
+      payload: JSON.parse(row.payload_json || '{}'),
+      createdAt: row.created_at
     };
   }
 

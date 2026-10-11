@@ -6,12 +6,14 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
+    "start:portal": "PORT=3001 RULE_STORE_DB_URL=./rules/portal-rules.db VALKEY_URL=redis://localhost:6389 node src/server.js",
     "test": "node --test --test-reporter=spec tests/**/*.test.js",
     "test:tap": "node --test --test-reporter=tap tests/**/*.test.js",
     "test:ci": "mkdir -p reports && node --test --test-reporter=tap --test-reporter-destination=reports/test-results.tap tests/**/*.test.js",
     "test:report": "npm run test:ci && node scripts/test-report.js reports/test-results.tap",
     "lint": "eslint src tests scripts",
-    "package:rules": "node scripts/package-rules.js"
+    "package:rules": "node scripts/package-rules.js",
+    "seed:portal": "node scripts/seed-portal.js"
   },
   "engines": {
     "node": ">=20.0.0"
@@ -20,11 +22,13 @@
     "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1",
     "better-sqlite3": "^12.0.0",
+    "iovalkey": "^0.4.0",
     "pino": "^9.5.0",
     "semver": "^7.6.3"
   },
   "devDependencies": {
-    "eslint": "^9.13.0",
+    "eslint": "^9.39.5",
+    "globals": "^17.13.0",
     "pino-pretty": "^11.3.0"
   },
   "keywords": [

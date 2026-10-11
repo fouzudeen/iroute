@@ -6,7 +6,7 @@
 
 **Architecture:** Build a thin server-side admin layer and an HTML/JS single-page UI served by the existing Node HTTP server. Reuse the in-memory evaluator, validator, packager, and the new SQLite-backed forest store. Keep the rule engine itself untouched.
 
-**Tech Stack:** Node 20 ESM, native `node:http`, vanilla HTML/JS/CSS (no new build tooling), better-sqlite3, existing Ajv/Pino stack.
+**Tech Stack:** Node 20 ESM, native `node:http`, vanilla HTML/JS/CSS (no new build tooling), `better-sqlite3`, existing Ajv/Pino stack, `iovalkey` for Valkey Streams/counters.
 
 ---
 
@@ -34,6 +34,7 @@ The portal must:
 3. Make version history and rollback discoverable and one-click.
 4. Provide a safe **preview mode** that simulates a payment context against any draft or published version without affecting live traffic.
 5. Work on top of the current uncommitted RDBMS change set; do not duplicate the forest model.
+6. **Prevent split-version fleets:** after a publish/activate, all live iroute instances must be on the same rule version before any of them serves traffic with it.
 
 ---
 
@@ -43,9 +44,9 @@ The portal must:
 >
 > She opens "EU Card Payments". The rule list is shown as human-readable sentences: "If amount ≥ 500 AND country is in DE, FR, NL, BE, AT AND card brand is Visa or Mastercard, then route to PSP Premium EU first, PGSP EU Backup second." She clicks "Add Rule". A guided form asks: **When** (field, operator, value), **Then** (provider, weight, SLA). She can add multiple conditions and group them with AND/OR.
 >
-> When she saves, the portal creates a **draft** of the next version. She opens the simulator, fills a sample payment (amount, currency, country, card brand), and clicks "Preview Decision". The engine evaluates the draft and shows the ranked PSP list plus which rules matched. Satisfied, she clicks "Publish & Activate for Production". The old version remains in history; a rollback button appears next to it.
+> When she saves, the portal creates a **draft** of the next version. She opens the simulator, fills a sample payment (amount, currency, country, card brand), and clicks "Preview Decision". The engine evaluates the draft and shows the ranked PSP list plus which rules matched. Satisfied, she clicks "Publish & Activate for Production". The portal starts a **rule change**: it writes the activation to SQLite, computes how many iroute instances are alive from their heartbeats, emits a `RULE_CHANGE_PREPARE` event to Valkey, and waits until every instance acknowledges it has staged the new package. Once the ready counter equals the expected instance count, the portal emits `RULE_CHANGE_COMMIT` and all instances swap atomically. The old version remains in history; a rollback button appears next to it.
 >
-> Bob, her teammate, opens the **History** tab and sees every version, who published it, and what changed (diff). He rolls back to 1.2.0 after a spike in declines. The activation is logged and live traffic switches within seconds.
+> Bob, her teammate, opens the **History** tab and sees every version, who published it, and what changed (diff). He rolls back to 1.2.0 after a spike in declines. The same two-phase protocol runs. The activation is logged and live traffic switches together.
 
 ---
 
@@ -111,10 +112,28 @@ The portal must:
 ## Non-Functional Requirements
 
 - **No build step.** The UI is served as static HTML/JS/CSS from `src/portal/public` and uses vanilla JS with fetch.
-- **No new runtime dependencies** beyond what is already in `package.json` (better-sqlite3 is already present).
+- **One new runtime dependency:** `iovalkey` for Valkey Streams/counters.
 - **Backward compatible.** Existing `/v1/route` and rule file workflow keep working.
-- **Stateless admin endpoints.** All state lives in the existing SQLite store.
+- **Stateless admin endpoints.** Rule state lives in SQLite; coordination state lives in Valkey.
 - **Security placeholders.** The portal endpoints should be annotated with TODOs for auth middleware; this plan does not implement auth.
+
+## Tasks (engineer order)
+
+1. Add Valkey client and coordination modules (`src/events/*`).
+2. Extend store with helper methods.
+3. Extend `RoutingEngine` for reload/staging.
+4. Build portal API handlers.
+5. Build portal UI pages.
+6. Wire portal + coordination into `src/server.js`.
+7. Write tests for portal and events.
+8. Add seed script and docs.
+9. Run `npm test`, `npm run lint`, manual server checks.
+
+### FR9 — Coordinated Rule Change
+
+- Publish/activate/rollback triggers a Valkey-backed two-phase commit.
+- No instance swaps until every live instance has staged the new package.
+- Admin status/force-commit/abort endpoints for operator override.
 
 ---
 
@@ -140,9 +159,108 @@ The portal must:
 | Version | `RulePackage.version` |
 | Draft | `RulePackage` with `publishedAt IS NULL` |
 | Live version | `RulePackageActivation` for `(env='production', scope='global')` |
-| Publish & Activate | `publishPackage(..., { publish: true })` + `setActive(...)` |
-| Rollback | `rollback(...)` |
+| Publish & Activate | `publishPackage(..., { publish: true })` + `setActive(...)` + Valkey 2PC |
+| Rollback | `rollback(...)` + Valkey 2PC |
 | Author | `RulePackage.created_by` / `AuditLog.actor` |
+| Coordinated change | Valkey Stream + counter + instance heartbeats |
+
+---
+
+## Coordinated Rule Change Protocol (counter-based 2PC)
+
+### Valkey data structures
+
+| Key / Stream | Type | Purpose |
+|---|---|---|
+| `iroute:rule:changes` | Valkey Stream | Ordered log of every rule change event. |
+| `iroute:rule:change:{changeId}` | Hash | Change metadata: `treeKey`, `environment`, `scope`, `scopeValue`, `version`, `packageId`, `checksum`, `expectedInstances`, `timeoutAt`. |
+| `iroute:rule:ready:{changeId}` | Counter | How many instances have staged and validated the new package. |
+| `iroute:rule:commit:{changeId}` | String | `PENDING` → `COMMITTED` or `ABORTED`. |
+| `iroute:rule:instance:{instanceId}` | String with TTL | Heartbeat registry used to count live instances. |
+| `iroute:rule:writer-lock:{env}:{scope}` | String with TTL | Portal lock to serialize writes for one environment/scope. |
+
+### Event schema
+
+Prepare event (appended by portal):
+
+```json
+{
+  "eventType": "RULE_CHANGE_PREPARE",
+  "changeId": "<uuid>",
+  "treeKey": "eu-cards",
+  "environment": "production",
+  "scope": "global",
+  "scopeValue": "",
+  "version": "1.3.0",
+  "packageId": "<uuid>",
+  "checksum": "<sha256>",
+  "expectedInstances": 6,
+  "timeoutMs": 30000,
+  "actor": "alice@example.com",
+  "timestamp": "2026-10-10T12:34:56Z"
+}
+```
+
+Commit event (appended by portal when ready counter reaches expected):
+
+```json
+{
+  "eventType": "RULE_CHANGE_COMMIT",
+  "changeId": "<uuid>"
+}
+```
+
+Abort event (appended on timeout or operator action):
+
+```json
+{
+  "eventType": "RULE_CHANGE_ABORT",
+  "changeId": "<uuid>",
+  "reason": "timeout"
+}
+```
+
+### Writer lock lifetime
+
+The writer lock `iroute:rule:writer-lock:{env}:{scope}` MUST be held for the **entire** rule-change lifecycle, not just the `prepareChange` step. It is acquired before the prepare event is emitted and released only after the change is committed or aborted. This prevents a second publisher from interleaving a new change while the fleet is still staging the previous one. The current implementation stores the lock reference in the coordinator process and releases it in `commit()`/`abort()`.
+
+> ⚠️ **Known concern:** The lock is held in-process by the coordinator. If the portal process crashes between `prepareChange` and `commit`/`abort`, the lock remains in Valkey until its TTL expires (default 10s). During that window, the environment/scope cannot publish. Future work should add a heartbeat-based `recover()` or explicit `force-release` endpoint for operators, and consider Redlock/Raft semantics if Valkey is clustered.
+
+### Flow
+
+1. **Portal publish/activate/rollback**
+   - Acquire writer lock `iroute:rule:writer-lock:{env}:{scope}` (NX, TTL 10s).
+   - Update SQLite: insert package, set activation, write audit log.
+   - Read live instances from heartbeat registry to compute `expectedInstances`.
+   - Create `change:{id}` hash, set `ready:{id}` to 0, `commit:{id}` to `PENDING`.
+   - Append `RULE_CHANGE_PREPARE` to `iroute:rule:changes`.
+   - Start polling `ready:{id}`.
+
+2. **Each iroute instance consumes the prepare**
+   - Load the package version described by the event from SQLite/store.
+   - Validate with `RuleValidator`.
+   - Stage the validated package in `engine._pendingRulePackage`.
+   - `INCR iroute:rule:ready:{changeId}`.
+   - Continue consuming the stream.
+
+3. **Portal commits**
+   - When `ready:{id} >= expectedInstances`, set `commit:{id} = COMMITTED` and append `RULE_CHANGE_COMMIT`.
+   - If timeout elapses first, append `RULE_CHANGE_ABORT`.
+
+4. **Instances apply commit/abort**
+   - On `COMMIT`: atomically swap `engine._rulePackage` and the `RuleBasedStrategy` in the registry; clear staging; update local `lastAppliedChangeId`.
+   - On `ABORT`: discard staging.
+
+5. **Health/readiness gate**
+   - `/health/ready` returns 503 if the instance has a staged but uncommitted change, or if it is missing a `COMMIT` event it has already seen a `PREPARE` for.
+
+### CAP trade-off
+
+The protocol is CP-ish for the rule change itself: if an instance is partitioned, commit is blocked. Operational workarounds:
+
+- Instance heartbeats expire after a TTL; the portal recomputes `expectedInstances` and can lower the quorum.
+- Admin endpoints `POST /portal/api/admin/changes/:changeId/force-commit` and `/abort` let an operator break the logjam.
+- During maintenance windows, operators can reduce the expected instance count via `RULE_CHANGE_EXPECTED_INSTANCES` env var.
 
 ---
 
@@ -162,6 +280,9 @@ POST   /portal/api/policies/:treeKey/rollback
 GET    /portal/api/policies/:treeKey/history
 POST   /portal/api/simulate
 GET    /portal/api/audit
+GET    /portal/api/admin/changes/:changeId/status
+POST   /portal/api/admin/changes/:changeId/force-commit
+POST   /portal/api/admin/changes/:changeId/abort
 ```
 
 Each endpoint delegates to `SqliteRuleStore` and the existing evaluator/validator. See the task list below for request/response shapes.
@@ -176,7 +297,13 @@ Each endpoint delegates to `SqliteRuleStore` and the existing evaluator/validato
 - `src/portal/handlers/policies.js` — API handlers for policies, versions, lifecycle.
 - `src/portal/handlers/simulate.js` — preview endpoint.
 - `src/portal/handlers/audit.js` — audit feed.
+- `src/portal/handlers/admin-changes.js` — change status, force-commit, abort.
 - `src/portal/formatters/rule-sentence.js` — convert condition tree to readable sentence.
+- `src/events/valkey-client.js` — shared `iovalkey` wrapper.
+- `src/events/change-coordinator.js` — portal-side 2PC coordinator.
+- `src/events/change-consumer.js` — iroute-side stream consumer.
+- `src/events/instance-heartbeat.js` — instance heartbeat publisher.
+- `src/events/distributed-lock.js` — Valkey lock helper.
 - `src/portal/public/index.html` — dashboard.
 - `src/portal/public/policy.html` — rule builder + simulator.
 - `src/portal/public/history.html` — version timeline.
@@ -185,12 +312,19 @@ Each endpoint delegates to `SqliteRuleStore` and the existing evaluator/validato
 - `tests/portal/policies.test.js` — API contract tests.
 - `tests/portal/simulate.test.js` — simulator tests.
 - `tests/portal/rule-sentence.test.js` — formatter tests.
+- `tests/events/change-coordinator.test.js`
+- `tests/events/change-consumer.test.js`
+- `scripts/seed-portal.js`
 
 ### Modified files
 
-- `src/server.js` — mount portal routes and static files behind `/portal`.
-- `src/repository/sqlite-rule-store.js` — add `getTreeByKey`, `listDrafts`, `deleteDraft`, `getPackageById` helpers.
-- `package.json` — no new dependencies; optionally add a `portal:seed` script.
+- `src/server.js` — mount portal routes/static files; start heartbeat + consumer; update readiness.
+- `src/repository/sqlite-rule-store.js` — add `getPackageById`, `listDrafts`, `deletePackage`, `setPackagePublished`, `updateTree`.
+- `src/engine/routing-engine.js` — add `reload()`, `_pendingRulePackage`, `lastAppliedChangeId`, expose readiness state.
+- `src/rules/loader.js` — expose `loadActiveForScope(env, scope, scopeValue)`.
+- `package.json` — add `iovalkey` and `seed:portal` script.
+- `README.md`
+- `docs/ARCHITECTURE_RDBMS_NETWORK.md`
 
 ---
 
@@ -1060,6 +1194,8 @@ git commit -m "feat(portal): seed script and docs"
 - [ ] Simulator returns expected candidates.
 - [ ] Publish activates a version.
 - [ ] Rollback restores previous version.
+- [ ] Two-phase commit: all instances stage before any swaps.
+- [ ] `/health/ready` reflects pending changes.
 - [ ] Audit log records all lifecycle actions.
 - [ ] Existing `/v1/route` still works with file-based fallback.
 
@@ -1072,6 +1208,8 @@ git commit -m "feat(portal): seed script and docs"
 3. **Scope beyond global.** The plan only implements `scope='global'` activations. Merchant/region scopes can be added later in the UI.
 4. **Real-time collaboration.** Concurrent edits could overwrite drafts. Add optimistic locking or per-user drafts if required.
 5. **Visual rule graph.** The sentence formatter is the first UX layer. A future iteration can render a node graph.
+6. **Production Valkey cluster topology.** Single-node today; Redlock or Raft-based lock if true multi-master coordination is needed.
+7. **Writer-lock recovery.** The lock is held in-process by the coordinator. A crash leaves it in Valkey until TTL expiry. Add a `recover()` or operator `force-release` endpoint later.
 
 ---
 

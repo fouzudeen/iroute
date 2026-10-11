@@ -191,6 +191,25 @@ export class RuleLoader {
     return res.json();
   }
 
+  /**
+   * Load the active package/forest for an exact scope.
+   * Used by the portal simulator and change consumer when the caller already
+   * knows the target environment, scope, and scopeValue.
+   *
+   * @param {string} env
+   * @param {string} scope
+   * @param {string} scopeValue
+   * @returns {Promise<Object|null>}
+   */
+  async loadActiveForScope(env, scope, scopeValue = '') {
+    if (!this.store) return null;
+
+    const storeContext = this._storeContext({});
+    const trees = await this.store.findMatchingTrees(storeContext, env, scope, scopeValue);
+    if (trees.length === 0) return null;
+    return this._buildPackage(trees, scope, scopeValue);
+  }
+
   close() {
     this.store?.close();
   }

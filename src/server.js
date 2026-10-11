@@ -6,6 +6,11 @@ import { fileURLToPath } from 'node:url';
 import { createEngine } from './index.js';
 import { logger } from './config/logger.js';
 import { ValidationError, RuleNotFoundError } from './errors/errors.js';
+import { portalRouter } from './portal/portal-server.js';
+import { ChangeCoordinator } from './events/change-coordinator.js';
+import { ChangeConsumer } from './events/change-consumer.js';
+import { InstanceHeartbeat } from './events/instance-heartbeat.js';
+import { getValkeyClient, closeSharedValkey } from './events/valkey-client.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PORT = Number(process.env.PORT || 3000);
@@ -15,6 +20,10 @@ const RULE_STORE_URL = process.env.RULE_STORE_URL || undefined;
 
 let engine = null;
 let ready = false;
+let coordinator = null;
+let consumer = null;
+let heartbeat = null;
+let portal = null;
 
 export async function initEngine() {
   engine = await createEngine({ basePath: RULE_STORE_PATH, remoteUrl: RULE_STORE_URL });
@@ -22,6 +31,41 @@ export async function initEngine() {
   ready = true;
   logger.info({ version: engine._rulePackage.version, strategies: engine._registry.list() }, 'Routing engine ready');
   return engine;
+}
+
+async function initCoordination() {
+  if (!engine?.loader?.store) return;
+
+  try {
+    const valkey = getValkeyClient();
+    await valkey.connect();
+
+    coordinator = new ChangeCoordinator({ valkey });
+    heartbeat = new InstanceHeartbeat({ valkey, intervalMs: 5000, ttlSeconds: 10 });
+    await heartbeat.start();
+
+    consumer = new ChangeConsumer({ valkey, instanceId: heartbeat.instanceId });
+    consumer.bindEngine(engine);
+    // Start consumer in background; failures are logged by the consumer loop.
+    consumer.start().catch(err => logger.error({ err }, 'Change consumer exited'));
+
+    logger.info({ instanceId: heartbeat.instanceId }, 'Coordination initialized');
+  } catch (err) {
+    logger.warn({ err }, 'Valkey coordination unavailable; continuing without portal 2PC');
+    coordinator = null;
+  }
+}
+
+function initPortal() {
+  const store = engine?.loader?.store || null;
+  portal = portalRouter(store, { environment: process.env.RULE_ENVIRONMENT || 'production', coordinator });
+}
+
+async function init() {
+  await initEngine();
+  await initCoordination();
+  initPortal();
+  await startServer(DEFAULT_PORT);
 }
 
 function send(res, status, body, contentType = 'application/json') {
@@ -158,7 +202,12 @@ export const server = createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && url.pathname === '/health/ready') {
-    return send(res, ready ? 200 : 503, { status: ready ? 'ready' : 'not ready' });
+    const engineReady = ready && engine?.isReady?.() !== false;
+    return send(res, engineReady ? 200 : 503, { status: engineReady ? 'ready' : 'not ready' });
+  }
+
+  if (url.pathname.startsWith('/portal')) {
+    return portal(req, res);
   }
 
   if (req.method === 'GET' && url.pathname === '/openapi.json') {
@@ -194,10 +243,20 @@ export function startServer(port = DEFAULT_PORT) {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  initEngine()
-    .then(() => startServer(DEFAULT_PORT))
+  init()
     .catch(err => {
       logger.error({ err }, 'Failed to initialize routing engine');
       ready = false;
     });
+
+  async function shutdown() {
+    logger.info('Shutting down');
+    if (consumer) consumer.stop();
+    if (heartbeat) heartbeat.stop();
+    await closeSharedValkey().catch(() => {});
+    server.close(() => process.exit(0));
+  }
+
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
 }

@@ -16,6 +16,10 @@ export class RuleBasedStrategy extends RoutingStrategy {
     return true;
   }
 
+  updatePackage(rulePackage) {
+    this._rulePackage = rulePackage;
+  }
+
   route(context, { startedAt = Date.now() } = {}) {
     const raw = this._rulePackage.forest
       ? new ForestEvaluator({ trees: this._rulePackage.trees, logger: this._logger }).evaluate(context)

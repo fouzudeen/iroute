@@ -9,11 +9,12 @@ export default [
       sourceType: 'module',
       globals: {
         ...globals.node,
-        ...globals.es2024
+        ...globals.es2024,
+        ...globals.browser
       }
     },
     rules: {
-      'no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      'no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
       'no-console': 'off',
       'semi': ['error', 'always'],
       'quotes': ['error', 'single', { avoidEscape: true }]

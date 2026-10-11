@@ -12,7 +12,9 @@ export class RoutingEngine {
     this._registry = new StrategyRegistry(this.logger);
     this._decoratorRegistry = new DecoratorRegistry(this.logger);
     this._rulePackage = null;
+    this._pendingRulePackage = null;
     this._loaded = false;
+    this.lastAppliedChangeId = null;
 
     for (const strategy of strategies) {
       this._registry.register(strategy);
@@ -25,6 +27,24 @@ export class RoutingEngine {
 
   async load(version = 'latest') {
     const pkg = await this.loader.load(version);
+    return this._applyPackage(pkg);
+  }
+
+  /**
+   * Reload the active package/forest from the store.
+   * Used after a coordinated rule change commit is applied.
+   */
+  async reload() {
+    const pkg = await this.loader.load('latest');
+    return this._applyPackage(pkg);
+  }
+
+  /**
+   * Apply a loaded package to the engine.
+   * @param {Object} pkg
+   * @returns {RoutingEngine}
+   */
+  _applyPackage(pkg) {
     const valid = this.validator.validate(pkg);
     if (!valid) {
       throw new ValidationError(
@@ -35,14 +55,41 @@ export class RoutingEngine {
 
     this._rulePackage = pkg;
 
-    // Auto-register the rule-based strategy from the loaded package if not already present.
-    if (!this._registry.list().includes('RuleBasedStrategy')) {
-      this._registry.register(new RuleBasedStrategy(pkg, { logger: this.logger }));
+    // Replace the rule-based strategy so live traffic uses the new package.
+    const existingIndex = this._registry._strategies.findIndex(s => s.name === 'RuleBasedStrategy');
+    const ruleBased = new RuleBasedStrategy(pkg, { logger: this.logger });
+    if (existingIndex >= 0) {
+      this._registry._strategies[existingIndex] = ruleBased;
+    } else {
+      this._registry.register(ruleBased);
     }
 
     this._loaded = true;
     this.logger.info({ version: pkg.version, strategies: this._registry.list() }, 'Routing engine loaded');
     return this;
+  }
+
+  /**
+   * Apply a staged package atomically. Called by the change consumer on COMMIT.
+   * @param {Object} commitEvent
+   */
+  applyStagedPackage(commitEvent = {}) {
+    if (!this._pendingRulePackage) {
+      return;
+    }
+
+    const pkg = this._pendingRulePackage;
+    this._pendingRulePackage = null;
+    this._applyPackage(pkg);
+    this.lastAppliedChangeId = commitEvent.changeId || pkg._changeId || null;
+  }
+
+  /**
+   * Readiness gate: returns false while a change is staged but not committed.
+   * @returns {boolean}
+   */
+  isReady() {
+    return this._loaded && this._pendingRulePackage === null;
   }
 
   /**

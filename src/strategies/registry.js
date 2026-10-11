@@ -37,4 +37,8 @@ export class StrategyRegistry {
   list() {
     return this._strategies.map(s => s.name);
   }
+
+  get(name) {
+    return this._strategies.find(s => s.name === name) || null;
+  }
 }

@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Version History | iRoute</title>
+  <link rel="stylesheet" href="/portal/public/styles.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <a href="/portal" class="btn" style="margin-bottom:0.5rem">← Dashboard</a>
+        <h1 id="policy-name">History</h1>
+      </div>
+      <a id="edit-link" href="#" class="btn btn-primary">Edit Policy</a>
+    </header>
+    <div id="timeline" class="timeline"></div>
+  </div>
+
+  <script type="module">
+    import { api, el, fmtDate, confirmAction, showToast } from '/portal/public/app.js';
+
+    const treeKey = window.location.pathname.split('/').filter(Boolean).pop();
+    document.getElementById('edit-link').href = `/portal/policy/${treeKey}`;
+
+    async function load() {
+      const h = await api(`/policies/${treeKey}/history`);
+      document.getElementById('policy-name').textContent = `${h.policy.name} — Version History`;
+      const timeline = document.getElementById('timeline');
+      timeline.innerHTML = '';
+      for (const v of h.versions.slice().reverse()) {
+        const item = el('div', { class: 'timeline-item card' },
+          el('div', { style: 'display:flex; justify-content:space-between; align-items:flex-start' },
+            el('div', {},
+              el('h3', {}, `Version ${v.version}`),
+              el('p', { class: 'rule-meta' }, `Published: ${fmtDate(v.publishedAt)} • Created: ${fmtDate(v.createdAt)} • By ${v.createdBy || 'unknown'}`)
+            ),
+            v.isActive ? el('span', { class: 'badge live' }, 'LIVE') : null
+          ),
+          el('p', {}, v.description || 'No description'),
+          !v.isActive && v.publishedAt ? el('button', { class: 'btn btn-danger', 'data-version': v.version }, 'Rollback to this version') : null
+        );
+        timeline.appendChild(item);
+      }
+
+      timeline.addEventListener('click', async (e) => {
+        if (e.target.tagName === 'BUTTON' && e.target.dataset.version) {
+          if (!confirmAction(`Rollback to version ${e.target.dataset.version}?`)) return;
+          try {
+            await api(`/policies/${treeKey}/rollback`, { method: 'POST' });
+            showToast('Rollback complete');
+            await load();
+          } catch (err) {
+            alert(err.message);
+          }
+        }
+      });
+    }
+
+    load().catch(err => document.body.prepend(el('div', { class: 'card error' }, err.message)));
+  </script>
+</body>
+</html>

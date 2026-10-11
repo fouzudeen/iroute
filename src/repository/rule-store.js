@@ -58,8 +58,15 @@ export class IRuleStore {
 
   // Packages
   async publishPackage(_treeId, _version, _rulesJson, _meta) { throw new Error('Not implemented'); }
+  async getPackageById(_id) { throw new Error('Not implemented'); }
   async getPackage(_treeId, _version) { throw new Error('Not implemented'); }
   async listPackages(_treeId) { throw new Error('Not implemented'); }
+  async listDrafts(_treeId) { throw new Error('Not implemented'); }
+  async deletePackage(_id) { throw new Error('Not implemented'); }
+  async setPackagePublished(_id) { throw new Error('Not implemented'); }
+
+  // Trees
+  async updateTree(_treeId, _updates) { throw new Error('Not implemented'); }
 
   // Activations
   async setActive(_treeId, _version, _env, _scope, _scopeValue, _actor) { throw new Error('Not implemented'); }
