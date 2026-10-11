@@ -87,3 +87,52 @@ test('Engine uses DirectBankStrategy for mapped BIN and RuleBasedStrategy otherw
   assert.strictEqual(isRoutingDecision(ruleBased), true);
   assert.strictEqual(ruleBased.provenance.strategyName, 'RuleBasedStrategy');
 });
+
+test('StrategyRegistry.replace swaps the same-named strategy in place, preserving order', () => {
+  const logger = { child: () => ({ info: () => {}, debug: () => {} }) };
+  const registry = new StrategyRegistry(logger);
+
+  const directBank = { name: 'DirectBankStrategy', canRoute: () => false, route: () => 'direct' };
+  const firstRuleBased = { name: 'RuleBasedStrategy', canRoute: () => true, route: () => 'v1' };
+  registry.register(directBank);
+  registry.register(firstRuleBased);
+
+  const secondRuleBased = { name: 'RuleBasedStrategy', canRoute: () => true, route: () => 'v2' };
+  registry.replace(secondRuleBased);
+
+  // Position (and therefore precedence) is unchanged; only the instance is swapped.
+  assert.deepStrictEqual(registry.list(), ['DirectBankStrategy', 'RuleBasedStrategy']);
+  assert.strictEqual(registry.get('RuleBasedStrategy'), secondRuleBased);
+  assert.strictEqual(registry.select({}).route(), 'v2');
+});
+
+test('StrategyRegistry.replace appends a strategy whose name is not registered', () => {
+  const logger = { child: () => ({ info: () => {}, debug: () => {} }) };
+  const registry = new StrategyRegistry(logger);
+
+  registry.register({ name: 'Alpha', canRoute: () => true, route: () => 'a' });
+  registry.replace({ name: 'Beta', canRoute: () => true, route: () => 'b' });
+
+  assert.deepStrictEqual(registry.list(), ['Alpha', 'Beta']);
+});
+
+test('StrategyRegistry.replace rejects an invalid strategy', () => {
+  const logger = { child: () => ({ info: () => {}, debug: () => {} }) };
+  const registry = new StrategyRegistry(logger);
+
+  assert.throws(() => registry.replace({ name: 'BadStrategy' }), /Invalid strategy/);
+});
+
+test('StrategyRegistry.all returns a copy that cannot mutate the registry', () => {
+  const logger = { child: () => ({ info: () => {}, debug: () => {} }) };
+  const registry = new StrategyRegistry(logger);
+  const alpha = { name: 'Alpha', canRoute: () => true, route: () => 'a' };
+  registry.register(alpha);
+
+  const snapshot = registry.all();
+  snapshot.push({ name: 'Injected', canRoute: () => true, route: () => 'x' });
+  snapshot[0] = { name: 'Mutated', canRoute: () => true, route: () => 'x' };
+
+  assert.deepStrictEqual(registry.list(), ['Alpha']);
+  assert.strictEqual(registry.get('Alpha'), alpha);
+});

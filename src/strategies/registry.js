@@ -6,12 +6,40 @@ export class StrategyRegistry {
     this._logger = logger?.child({ module: 'StrategyRegistry' }) || logger;
   }
 
-  register(strategy) {
+  _assertValid(strategy) {
     if (!strategy || typeof strategy.canRoute !== 'function' || typeof strategy.route !== 'function') {
       throw new RoutingError('Invalid strategy: must implement canRoute() and route()');
     }
+  }
+
+  register(strategy) {
+    this._assertValid(strategy);
     this._strategies.push(strategy);
     this._logger?.info({ strategy: strategy.name }, 'Strategy registered');
+    return this;
+  }
+
+  /**
+   * Replace the registered strategy with the same name, in place, so its
+   * precedence (registration position) is preserved. If no strategy with that
+   * name is registered, the strategy is appended instead.
+   *
+   * Used to hot-swap a strategy — e.g. the rule-based strategy when a new rule
+   * package is applied — without the caller touching the internal list.
+   *
+   * @param {import('./strategy.js').RoutingStrategy} strategy
+   * @returns {StrategyRegistry}
+   */
+  replace(strategy) {
+    this._assertValid(strategy);
+    const index = this._strategies.findIndex(s => s.name === strategy.name);
+    if (index >= 0) {
+      this._strategies[index] = strategy;
+      this._logger?.info({ strategy: strategy.name }, 'Strategy replaced');
+    } else {
+      this._strategies.push(strategy);
+      this._logger?.info({ strategy: strategy.name }, 'Strategy registered');
+    }
     return this;
   }
 
@@ -40,5 +68,15 @@ export class StrategyRegistry {
 
   get(name) {
     return this._strategies.find(s => s.name === name) || null;
+  }
+
+  /**
+   * Snapshot of the registered strategies in registration order. Returns a copy
+   * so callers can iterate without exposing (and mutating) the internal list.
+   *
+   * @returns {import('./strategy.js').RoutingStrategy[]}
+   */
+  all() {
+    return [...this._strategies];
   }
 }

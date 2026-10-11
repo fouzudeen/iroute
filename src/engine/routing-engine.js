@@ -56,13 +56,8 @@ export class RoutingEngine {
     this._rulePackage = pkg;
 
     // Replace the rule-based strategy so live traffic uses the new package.
-    const existingIndex = this._registry._strategies.findIndex(s => s.name === 'RuleBasedStrategy');
     const ruleBased = new RuleBasedStrategy(pkg, { logger: this.logger });
-    if (existingIndex >= 0) {
-      this._registry._strategies[existingIndex] = ruleBased;
-    } else {
-      this._registry.register(ruleBased);
-    }
+    this._registry.replace(ruleBased);
 
     this._loaded = true;
     this.logger.info({ version: pkg.version, strategies: this._registry.list() }, 'Routing engine loaded');
@@ -112,7 +107,7 @@ export class RoutingEngine {
     const startedAt = Date.now();
 
     // Lazy-load any strategy that supports async load.
-    for (const strategy of this._registry._strategies) {
+    for (const strategy of this._registry.all()) {
       if (typeof strategy.load === 'function' && !strategy._loaded) {
         await strategy.load();
       }

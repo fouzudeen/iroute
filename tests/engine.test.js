@@ -35,3 +35,26 @@ test('engine includes requestId in result', async () => {
   const result = await engine.route({ amount: 10, currency: 'EUR' });
   assert.ok(result.requestId);
 });
+
+test('applying a new rule package hot-swaps the rule-based strategy in place', async () => {
+  const engine = await createEngine({ basePath: './rules', enableDirectBank: false });
+  await engine.load('1.2.0');
+
+  const before = await engine.route({
+    amount: 750, currency: 'EUR', country: 'DE', paymentMethod: 'card', cardBrand: 'visa'
+  });
+  assert.strictEqual(before.ruleVersion, '1.2.0');
+
+  // Stage and commit a distinct package (the change-consumer staging contract).
+  engine._pendingRulePackage = { version: '9.9.9', createdAt: new Date().toISOString(), rules: [] };
+  engine.applyStagedPackage({ changeId: 'c-hot-swap' });
+
+  const after = await engine.route({
+    amount: 750, currency: 'EUR', country: 'DE', paymentMethod: 'card', cardBrand: 'visa'
+  });
+  assert.strictEqual(after.ruleVersion, '9.9.9');
+
+  // Replace, not append: exactly one RuleBasedStrategy remains after the swap.
+  assert.deepStrictEqual(engine._registry.list(), ['RuleBasedStrategy']);
+  assert.strictEqual(engine.lastAppliedChangeId, 'c-hot-swap');
+});
